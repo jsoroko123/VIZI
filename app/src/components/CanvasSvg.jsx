@@ -6612,10 +6612,174 @@ function CanvasSvg({
           ));
       });
     };
+    const getUrlPaintId = (value) => {
+      const raw = String(value || "").trim();
+      const match = raw.match(/^url\(\s*(['"]?)#([^'")]+)\1\s*\)$/i);
+      return String(match?.[2] || "").trim();
+    };
+    const readStopStyleValue = (stop, name) => {
+      const style = String(stop?.getAttribute?.("style") || "");
+      if (!style) return "";
+      const match = style.match(new RegExp(`${name}\\s*:\\s*([^;]+)`, "i"));
+      return String(match?.[1] || "").trim();
+    };
+    const gradientTintColor = (baseColor, sourceColor, index, count) => {
+      const sourceChannels = parseCssRgbChannels(sourceColor);
+      if (sourceChannels) {
+        const [r, g, b] = sourceChannels;
+        const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+        if (luminance >= 0.56) {
+          return mixCssColor(baseColor, "#ffffff", Math.min(0.62, 0.1 + (luminance - 0.56) * 1.35));
+        }
+        return mixCssColor(baseColor, "#000000", Math.min(0.42, 0.06 + (0.56 - luminance) * 0.9));
+      }
+      const t = count > 1 ? index / Math.max(1, count - 1) : 0.5;
+      if (t < 0.45) return mixCssColor(baseColor, "#ffffff", 0.36 - t * 0.28);
+      if (t > 0.55) return mixCssColor(baseColor, "#000000", 0.08 + (t - 0.55) * 0.44);
+      return baseColor;
+    };
+    const makeStableSvgIdSuffix = (text) => {
+      let hash = 0;
+      const source = String(text || "");
+      for (let i = 0; i < source.length; i += 1) {
+        hash = (hash * 31 + source.charCodeAt(i)) >>> 0;
+      }
+      return hash.toString(36);
+    };
+    const applyGradientAwareFillOverride = (svgText) => {
+      if (!nextFill || !parseCssRgbChannels(nextFill)) return null;
+      if (typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") return null;
+      try {
+        const doc = new DOMParser().parseFromString(
+          `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape">${String(svgText || "")}</svg>`,
+          "image/svg+xml"
+        );
+        if (doc.querySelector("parsererror")) return null;
+        const root = doc.documentElement;
+        if (!root) return null;
+        const ns = "http://www.w3.org/2000/svg";
+        const colorSuffix = makeStableSvgIdSuffix(nextFill);
+        const gradientCache = new Map();
+        const ensureDefs = () => {
+          let defs = root.querySelector("defs");
+          if (!defs) {
+            defs = doc.createElementNS(ns, "defs");
+            root.insertBefore(defs, root.firstChild);
+          }
+          return defs;
+        };
+        const directStopsForGradient = (gradient) =>
+          Array.from(gradient?.children || []).filter((child) => String(child?.tagName || "").toLowerCase() === "stop");
+        const stopsForGradient = (gradient, seen = new Set()) => {
+          if (!gradient || seen.has(gradient)) return [];
+          seen.add(gradient);
+          const direct = directStopsForGradient(gradient);
+          if (direct.length) return direct;
+          const href = String(
+            gradient.getAttribute("href") ||
+            gradient.getAttribute("xlink:href") ||
+            gradient.getAttributeNS?.("http://www.w3.org/1999/xlink", "href") ||
+            ""
+          ).trim();
+          const referencedId = href.startsWith("#") ? href.slice(1) : "";
+          return referencedId ? stopsForGradient(doc.getElementById(referencedId), seen) : [];
+        };
+        const appendTintedStops = (gradient, sourceStops) => {
+          const stops = Array.isArray(sourceStops) && sourceStops.length ? sourceStops : [];
+          if (!stops.length) {
+            [
+              ["0%", mixCssColor(nextFill, "#ffffff", 0.38), "1"],
+              ["48%", nextFill, "1"],
+              ["100%", mixCssColor(nextFill, "#000000", 0.24), "1"],
+            ].forEach(([offset, color, opacity]) => {
+              const stop = doc.createElementNS(ns, "stop");
+              stop.setAttribute("offset", offset);
+              stop.setAttribute("stop-color", color);
+              stop.setAttribute("stop-opacity", opacity);
+              gradient.appendChild(stop);
+            });
+            return;
+          }
+          stops.forEach((sourceStop, index) => {
+            const stop = doc.createElementNS(ns, "stop");
+            const sourceColor =
+              String(sourceStop.getAttribute("stop-color") || "").trim() ||
+              readStopStyleValue(sourceStop, "stop-color");
+            const sourceOpacity =
+              String(sourceStop.getAttribute("stop-opacity") || "").trim() ||
+              readStopStyleValue(sourceStop, "stop-opacity");
+            stop.setAttribute("offset", String(sourceStop.getAttribute("offset") || `${Math.round((index / Math.max(1, stops.length - 1)) * 100)}%`));
+            stop.setAttribute("stop-color", gradientTintColor(nextFill, sourceColor, index, stops.length));
+            if (sourceOpacity) stop.setAttribute("stop-opacity", sourceOpacity);
+            gradient.appendChild(stop);
+          });
+        };
+        const ensureTintedGradient = (sourceGradientId, index) => {
+          const sourceGradient = sourceGradientId ? doc.getElementById(sourceGradientId) : null;
+          const sourceTag = String(sourceGradient?.tagName || "").toLowerCase();
+          const gradientKind = sourceTag === "radialgradient" ? "radialGradient" : "linearGradient";
+          const cacheKey = `${sourceGradientId || "generated"}:${gradientKind}:${index}`;
+          const cached = gradientCache.get(cacheKey);
+          if (cached) return cached;
+          const safeSourceId = String(sourceGradientId || "fill").replace(/[^a-zA-Z0-9_-]/g, "");
+          let gradientId = `viziFillGradient-${safeSourceId}-${colorSuffix}-${index}`;
+          while (doc.getElementById(gradientId)) {
+            gradientId = `${gradientId}-x`;
+          }
+          const gradient = doc.createElementNS(ns, gradientKind);
+          if (sourceGradient) {
+            Array.from(sourceGradient.attributes || []).forEach((attr) => {
+              if (!attr?.name || attr.name === "id" || attr.name === "href" || attr.name === "xlink:href") return;
+              gradient.setAttribute(attr.name, attr.value);
+            });
+          } else {
+            gradient.setAttribute("x1", "0");
+            gradient.setAttribute("y1", "0");
+            gradient.setAttribute("x2", "0");
+            gradient.setAttribute("y2", "1");
+          }
+          gradient.setAttribute("id", gradientId);
+          appendTintedStops(gradient, stopsForGradient(sourceGradient));
+          ensureDefs().appendChild(gradient);
+          gradientCache.set(cacheKey, gradientId);
+          return gradientId;
+        };
+        const getStartTag = (el) => {
+          const html = String(el?.outerHTML || "");
+          return html.match(/^<[^>]+>/)?.[0] || "";
+        };
+        const shapes = Array.from(root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline"));
+        let changed = false;
+        shapes.forEach((el, index) => {
+          const tagName = String(el.tagName || "").toLowerCase();
+          const start = getStartTag(el);
+          if (!shouldRecolorPrimaryElement(start, tagName)) return;
+          const fillPaint = readPaint(el, "fill");
+          if (isProtectedFill(fillPaint) && !canUseStrokeOnlyFillTarget(start, tagName)) return;
+          const sourceGradientId = getUrlPaintId(fillPaint);
+          const nextGradientId = ensureTintedGradient(sourceGradientId, index);
+          setPaint(el, "fill", `url(#${nextGradientId})`);
+          changed = true;
+        });
+        if (!changed) return null;
+        return serializeInner(root);
+      } catch {
+        return null;
+      }
+    };
 
     let out = String(inner);
+    let fillHandledWithGradient = false;
 
     if (nextFill) {
+      const gradientAwareOut = applyGradientAwareFillOverride(out);
+      if (gradientAwareOut != null) {
+        out = gradientAwareOut;
+        fillHandledWithGradient = true;
+      }
+    }
+
+    if (nextFill && !fillHandledWithGradient) {
       const isDefaultRecolorFill = (value) => {
         const fill = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
         return fill === "#d7dade" ||
@@ -6755,7 +6919,7 @@ function CanvasSvg({
         let next = String(styleBody || "");
         if (nextFill) {
           next = next.replace(/fill\s*:\s*([^;]+)(;?)/gi, (fillMatch, fillValue, suffix) => (
-            isProtectedFill(fillValue) ? fillMatch : `fill:${nextFill}${suffix || ";"}`
+            isProtectedFill(fillValue) || fillHandledWithGradient ? fillMatch : `fill:${nextFill}${suffix || ";"}`
           ));
         }
         if (nextStroke) {

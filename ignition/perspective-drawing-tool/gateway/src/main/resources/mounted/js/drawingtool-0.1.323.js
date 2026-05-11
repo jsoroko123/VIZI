@@ -19419,8 +19419,166 @@ var MesoraDrawingToolBundle = (() => {
           return String(match).replace(/\bstroke-width\s*=\s*(["'])([^"']*)\1/gi, `stroke-width="${value}"`).replace(/style\s*=\s*(["'])([^"']*)\1/gi, (styleMatch, quote, styleBody) => `style=${quote}${String(styleBody || "").replace(/stroke-width\s*:\s*([^;]+)(;?)/gi, `stroke-width:${value}$2`)}${quote}`);
         });
       };
+      const getUrlPaintId = (value) => {
+        const raw = String(value || "").trim();
+        const match = raw.match(/^url\(\s*(['"]?)#([^'")]+)\1\s*\)$/i);
+        return String((match == null ? void 0 : match[2]) || "").trim();
+      };
+      const readStopStyleValue = (stop, name) => {
+        var _a2;
+        const style = String(((_a2 = stop == null ? void 0 : stop.getAttribute) == null ? void 0 : _a2.call(stop, "style")) || "");
+        if (!style) return "";
+        const match = style.match(new RegExp(`${name}\\s*:\\s*([^;]+)`, "i"));
+        return String((match == null ? void 0 : match[1]) || "").trim();
+      };
+      const gradientTintColor = (baseColor, sourceColor, index2, count) => {
+        const sourceChannels = parseCssRgbChannels(sourceColor);
+        if (sourceChannels) {
+          const [r, g, b] = sourceChannels;
+          const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+          if (luminance >= 0.56) {
+            return mixCssColor(baseColor, "#ffffff", Math.min(0.62, 0.1 + (luminance - 0.56) * 1.35));
+          }
+          return mixCssColor(baseColor, "#000000", Math.min(0.42, 0.06 + (0.56 - luminance) * 0.9));
+        }
+        const t = count > 1 ? index2 / Math.max(1, count - 1) : 0.5;
+        if (t < 0.45) return mixCssColor(baseColor, "#ffffff", 0.36 - t * 0.28);
+        if (t > 0.55) return mixCssColor(baseColor, "#000000", 0.08 + (t - 0.55) * 0.44);
+        return baseColor;
+      };
+      const makeStableSvgIdSuffix = (text) => {
+        let hash = 0;
+        const source = String(text || "");
+        for (let i = 0; i < source.length; i += 1) {
+          hash = hash * 31 + source.charCodeAt(i) >>> 0;
+        }
+        return hash.toString(36);
+      };
+      const applyGradientAwareFillOverride = (svgText) => {
+        if (!nextFill || !parseCssRgbChannels(nextFill)) return null;
+        if (typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") return null;
+        try {
+          const doc = new DOMParser().parseFromString(
+            `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape">${String(svgText || "")}</svg>`,
+            "image/svg+xml"
+          );
+          if (doc.querySelector("parsererror")) return null;
+          const root = doc.documentElement;
+          if (!root) return null;
+          const ns = "http://www.w3.org/2000/svg";
+          const colorSuffix = makeStableSvgIdSuffix(nextFill);
+          const gradientCache = /* @__PURE__ */ new Map();
+          const ensureDefs = () => {
+            let defs = root.querySelector("defs");
+            if (!defs) {
+              defs = doc.createElementNS(ns, "defs");
+              root.insertBefore(defs, root.firstChild);
+            }
+            return defs;
+          };
+          const directStopsForGradient = (gradient) => Array.from((gradient == null ? void 0 : gradient.children) || []).filter((child) => String((child == null ? void 0 : child.tagName) || "").toLowerCase() === "stop");
+          const stopsForGradient = (gradient, seen = /* @__PURE__ */ new Set()) => {
+            var _a2;
+            if (!gradient || seen.has(gradient)) return [];
+            seen.add(gradient);
+            const direct = directStopsForGradient(gradient);
+            if (direct.length) return direct;
+            const href = String(
+              gradient.getAttribute("href") || gradient.getAttribute("xlink:href") || ((_a2 = gradient.getAttributeNS) == null ? void 0 : _a2.call(gradient, "http://www.w3.org/1999/xlink", "href")) || ""
+            ).trim();
+            const referencedId = href.startsWith("#") ? href.slice(1) : "";
+            return referencedId ? stopsForGradient(doc.getElementById(referencedId), seen) : [];
+          };
+          const appendTintedStops = (gradient, sourceStops) => {
+            const stops = Array.isArray(sourceStops) && sourceStops.length ? sourceStops : [];
+            if (!stops.length) {
+              [
+                ["0%", mixCssColor(nextFill, "#ffffff", 0.38), "1"],
+                ["48%", nextFill, "1"],
+                ["100%", mixCssColor(nextFill, "#000000", 0.24), "1"]
+              ].forEach(([offset, color2, opacity]) => {
+                const stop = doc.createElementNS(ns, "stop");
+                stop.setAttribute("offset", offset);
+                stop.setAttribute("stop-color", color2);
+                stop.setAttribute("stop-opacity", opacity);
+                gradient.appendChild(stop);
+              });
+              return;
+            }
+            stops.forEach((sourceStop, index2) => {
+              const stop = doc.createElementNS(ns, "stop");
+              const sourceColor = String(sourceStop.getAttribute("stop-color") || "").trim() || readStopStyleValue(sourceStop, "stop-color");
+              const sourceOpacity = String(sourceStop.getAttribute("stop-opacity") || "").trim() || readStopStyleValue(sourceStop, "stop-opacity");
+              stop.setAttribute("offset", String(sourceStop.getAttribute("offset") || `${Math.round(index2 / Math.max(1, stops.length - 1) * 100)}%`));
+              stop.setAttribute("stop-color", gradientTintColor(nextFill, sourceColor, index2, stops.length));
+              if (sourceOpacity) stop.setAttribute("stop-opacity", sourceOpacity);
+              gradient.appendChild(stop);
+            });
+          };
+          const ensureTintedGradient = (sourceGradientId, index2) => {
+            const sourceGradient = sourceGradientId ? doc.getElementById(sourceGradientId) : null;
+            const sourceTag = String((sourceGradient == null ? void 0 : sourceGradient.tagName) || "").toLowerCase();
+            const gradientKind = sourceTag === "radialgradient" ? "radialGradient" : "linearGradient";
+            const cacheKey = `${sourceGradientId || "generated"}:${gradientKind}:${index2}`;
+            const cached = gradientCache.get(cacheKey);
+            if (cached) return cached;
+            const safeSourceId = String(sourceGradientId || "fill").replace(/[^a-zA-Z0-9_-]/g, "");
+            let gradientId = `viziFillGradient-${safeSourceId}-${colorSuffix}-${index2}`;
+            while (doc.getElementById(gradientId)) {
+              gradientId = `${gradientId}-x`;
+            }
+            const gradient = doc.createElementNS(ns, gradientKind);
+            if (sourceGradient) {
+              Array.from(sourceGradient.attributes || []).forEach((attr) => {
+                if (!(attr == null ? void 0 : attr.name) || attr.name === "id" || attr.name === "href" || attr.name === "xlink:href") return;
+                gradient.setAttribute(attr.name, attr.value);
+              });
+            } else {
+              gradient.setAttribute("x1", "0");
+              gradient.setAttribute("y1", "0");
+              gradient.setAttribute("x2", "0");
+              gradient.setAttribute("y2", "1");
+            }
+            gradient.setAttribute("id", gradientId);
+            appendTintedStops(gradient, stopsForGradient(sourceGradient));
+            ensureDefs().appendChild(gradient);
+            gradientCache.set(cacheKey, gradientId);
+            return gradientId;
+          };
+          const getStartTag = (el) => {
+            var _a2;
+            const html = String((el == null ? void 0 : el.outerHTML) || "");
+            return ((_a2 = html.match(/^<[^>]+>/)) == null ? void 0 : _a2[0]) || "";
+          };
+          const shapes2 = Array.from(root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline"));
+          let changed = false;
+          shapes2.forEach((el, index2) => {
+            const tagName = String(el.tagName || "").toLowerCase();
+            const start = getStartTag(el);
+            if (!shouldRecolorPrimaryElement(start, tagName)) return;
+            const fillPaint = readPaint(el, "fill");
+            if (isProtectedFill(fillPaint) && !canUseStrokeOnlyFillTarget(start, tagName)) return;
+            const sourceGradientId = getUrlPaintId(fillPaint);
+            const nextGradientId = ensureTintedGradient(sourceGradientId, index2);
+            setPaint(el, "fill", `url(#${nextGradientId})`);
+            changed = true;
+          });
+          if (!changed) return null;
+          return serializeInner(root);
+        } catch {
+          return null;
+        }
+      };
       let out = String(inner);
+      let fillHandledWithGradient = false;
       if (nextFill) {
+        const gradientAwareOut = applyGradientAwareFillOverride(out);
+        if (gradientAwareOut != null) {
+          out = gradientAwareOut;
+          fillHandledWithGradient = true;
+        }
+      }
+      if (nextFill && !fillHandledWithGradient) {
         const isDefaultRecolorFill = (value) => {
           const fill2 = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
           return fill2 === "#d7dade" || fill2 === "rgb(215,218,222)" || fill2 === "rgba(215,218,222,1)" || fill2 === "#808080" || fill2 === "#888" || fill2 === "gray" || fill2 === "grey" || fill2 === "rgb(128,128,128)" || fill2 === "rgba(128,128,128,1)" || fill2 === "#cccccc" || fill2 === "#ccc" || fill2 === "rgb(204,204,204)" || fill2 === "rgba(204,204,204,1)";
@@ -19433,7 +19591,7 @@ var MesoraDrawingToolBundle = (() => {
         const EXCLUDED_FILL_TARGET_ID_RE = /(arrow|screen|deck|inside|label|text|bargraph|lock|line|stroke|outline|indicator)/i;
         const FILLABLE_TAG_RE = /^(path|rect|circle|ellipse|polygon)$/i;
         const STROKE_ONLY_FILLABLE_TAG_RE = /^(rect|circle|ellipse|polygon)$/i;
-        const canUseStrokeOnlyFillTarget = (elementStart, tagName) => {
+        const canUseStrokeOnlyFillTarget2 = (elementStart, tagName) => {
           if (!allowStrokeOnlyFillTargets || !STROKE_ONLY_FILLABLE_TAG_RE.test(String(tagName || ""))) {
             return false;
           }
@@ -19441,7 +19599,7 @@ var MesoraDrawingToolBundle = (() => {
           const elementId = String((idMatch == null ? void 0 : idMatch[2]) || "").trim();
           return !(elementId && EXCLUDED_FILL_TARGET_ID_RE.test(elementId) && !PRIMARY_FILL_TARGET_ID_RE.test(elementId));
         };
-        const shouldRecolorPrimaryElement = (elementStart, tagName) => {
+        const shouldRecolorPrimaryElement2 = (elementStart, tagName) => {
           if (startTagHasStrokeDetail(elementStart)) {
             return false;
           }
@@ -19452,7 +19610,7 @@ var MesoraDrawingToolBundle = (() => {
           if (isRecolorableFill(fillAttrMatch == null ? void 0 : fillAttrMatch[2])) {
             return true;
           }
-          if (isProtectedFill(fillAttrMatch == null ? void 0 : fillAttrMatch[2]) && canUseStrokeOnlyFillTarget(elementStart, tagName)) {
+          if (isProtectedFill(fillAttrMatch == null ? void 0 : fillAttrMatch[2]) && canUseStrokeOnlyFillTarget2(elementStart, tagName)) {
             return true;
           }
           const styleMatch = String(elementStart || "").match(/\bstyle\s*=\s*(["'])([^"']*)\1/i);
@@ -19460,7 +19618,7 @@ var MesoraDrawingToolBundle = (() => {
           if (isRecolorableFill(styleFillMatch == null ? void 0 : styleFillMatch[1])) {
             return true;
           }
-          if (isProtectedFill(styleFillMatch == null ? void 0 : styleFillMatch[1]) && canUseStrokeOnlyFillTarget(elementStart, tagName)) {
+          if (isProtectedFill(styleFillMatch == null ? void 0 : styleFillMatch[1]) && canUseStrokeOnlyFillTarget2(elementStart, tagName)) {
             return true;
           }
           const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
@@ -19475,13 +19633,13 @@ var MesoraDrawingToolBundle = (() => {
         };
         let fillChanged = false;
         out = out.replace(/(<(path|rect|circle|ellipse|polygon|polyline)[^>]*)(\/?>)/gi, (match, start, tag, end) => {
-          if (!shouldRecolorPrimaryElement(start, tag)) {
+          if (!shouldRecolorPrimaryElement2(start, tag)) {
             return match;
           }
           let next = String(start || "");
           let changedThisElement = false;
           if (/\bfill\s*=/.test(next)) {
-            next = next.replace(/\bfill\s*=\s*(["'])([^"']*)\1/gi, (fillMatch, quote, fillValue) => isProtectedFill(fillValue) && !canUseStrokeOnlyFillTarget(start, tag) ? fillMatch : (() => {
+            next = next.replace(/\bfill\s*=\s*(["'])([^"']*)\1/gi, (fillMatch, quote, fillValue) => isProtectedFill(fillValue) && !canUseStrokeOnlyFillTarget2(start, tag) ? fillMatch : (() => {
               changedThisElement = true;
               return `fill=${quote}${nextFill}${quote}`;
             })());
@@ -19492,7 +19650,7 @@ var MesoraDrawingToolBundle = (() => {
           next = next.replace(/style\s*=\s*(["'])([^"']*)\1/gi, (styleMatch, quote, styleBody) => {
             let cleaned = String(styleBody || "").replace(
               /fill\s*:\s*([^;]+)(;?)/gi,
-              (fillStyleMatch, fillValue, suffix) => isProtectedFill(fillValue) && !canUseStrokeOnlyFillTarget(start, tag) ? fillStyleMatch : (() => {
+              (fillStyleMatch, fillValue, suffix) => isProtectedFill(fillValue) && !canUseStrokeOnlyFillTarget2(start, tag) ? fillStyleMatch : (() => {
                 changedThisElement = true;
                 return `fill:${nextFill}${suffix || ";"}`;
               })()
@@ -19538,7 +19696,7 @@ var MesoraDrawingToolBundle = (() => {
         return String(match).replace(/style\s*=\s*(["'])([^"']*)\1/gi, (styleMatch, quote, styleBody) => {
           let next = String(styleBody || "");
           if (nextFill) {
-            next = next.replace(/fill\s*:\s*([^;]+)(;?)/gi, (fillMatch, fillValue, suffix) => isProtectedFill(fillValue) ? fillMatch : `fill:${nextFill}${suffix || ";"}`);
+            next = next.replace(/fill\s*:\s*([^;]+)(;?)/gi, (fillMatch, fillValue, suffix) => isProtectedFill(fillValue) || fillHandledWithGradient ? fillMatch : `fill:${nextFill}${suffix || ";"}`);
           }
           if (nextStroke) {
             next = next.replace(/stroke\s*:\s*([^;]+)(;?)/gi, (strokeMatch, strokeValue, suffix) => isProtectedStroke(strokeValue) ? strokeMatch : `stroke:${nextStroke}${suffix || ";"}`);
