@@ -1,20 +1,36 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 3.2747474 8.4615899" preserveAspectRatio="xMinYMin" kewidth="38.701" keheight="100" eType="FilterCleaning_DOCStatic" stroke="#808080" stroke-width="0.1269" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 3.2747474 8.4615899" preserveAspectRatio="xMidYMid meet" kewidth="38.701" keheight="100" eType="FilterCleaning_DOCStatic" fill="#D7DADE" stroke="#66717d" stroke-width="0.09" stroke-linejoin="round" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+
   <defs id="defs1">
-    <linearGradient id="filterShellFill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#e7e9ec" />
-      <stop offset="100%" stop-color="#b8bdc4" />
+    <linearGradient id="filterShellFill" x1="0.35" y1="0.25" x2="2.95" y2="8.15" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="38%" stop-color="#d8dee5" />
+      <stop offset="100%" stop-color="#9aa5b1" />
     </linearGradient>
-    <linearGradient id="filterPanelFill" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#e7e9ec" />
-      <stop offset="100%" stop-color="#b8bdc4" />
+    <linearGradient id="filterCapFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#b7c0ca" />
+    </linearGradient>
+    <linearGradient id="filterConeFill" x1="0.4" y1="5.4" x2="2.85" y2="8.25" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#eef2f6" />
+      <stop offset="52%" stop-color="#c6cfd8" />
+      <stop offset="100%" stop-color="#8d99a6" />
+    </linearGradient>
+    <linearGradient id="filterNeckFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#cbd3dc" />
+      <stop offset="100%" stop-color="#7c8895" />
     </linearGradient>
   </defs>
-  <g id="layer1" transform="translate(-14.277188,-10.651006)">
-    <path d="m 14.377188,11.320217 v 4.947501 l 1.537373,2.645833 1.537374,-2.645833 v -4.947501 l -1.537374,-0.562723 z" id="body" stroke="#808080" stroke-width="0.1269" style="classes:Terra/EquipmentStyles/DOC/Stopped" fill="url(#filterShellFill)" />
-    <path d="m 14.474775,12.41887 h 2.878328 z" id="path37" fill="none" stroke="#808080" stroke-width="0.1269" stroke-dasharray="none" />
-    <path d="m 14.474775,11.469115 h 2.878328 z" id="path6" fill="none" stroke="#808080" stroke-width="0.1269" stroke-dasharray="none" />
-    <path d="m 14.474775,16.128691 h 2.878328 z" id="path7" fill="none" stroke="#808080" stroke-width="0.1269" stroke-dasharray="none" />
-    <path d="m 17.373874,12.898514 h -1.518771 v 1.101613 l 1.526765,0.738585" id="path8" fill="url(#filterPanelFill)" stroke="#808080" stroke-width="0.1269" stroke-dasharray="none" />
+  <g id="layer1">
+    <path id="shadow" d="M 0.38 0.72 L 1.637 0.24 L 2.93 0.72 V 5.62 L 1.637 8.31 L 0.38 5.62 Z" fill="#111827" opacity="0.16" stroke="none" />
+    <path id="top-cap" data-vizi-fill-target="true" d="M 0.34 0.69 L 1.637 0.18 L 2.94 0.69 V 1.18 H 0.34 Z" fill="url(#filterCapFill)" stroke="#5b6470" stroke-width="0.095" />
+    <path id="body" data-vizi-fill-target="true" style="classes:Terra/EquipmentStyles/DOC/Stopped" d="M 0.24 1.08 H 3.035 V 5.62 H 0.24 Z" fill="url(#filterShellFill)" stroke="#5b6470" stroke-width="0.12" />
+    <path id="body-side-shade" d="M 2.48 1.16 H 3.035 V 5.56 H 2.48 Z" fill="#5f6b78" opacity="0.18" stroke="none" />
+    <path id="body-highlight" d="M 0.64 1.28 V 5.34" fill="none" stroke="#ffffff" stroke-width="0.065" opacity="0.55" />
+    <path id="top-rim" d="M 0.28 1.16 H 2.995" fill="none" stroke="#3f4854" stroke-width="0.09" />
+    <path id="bottom-rim" d="M 0.28 5.6 H 2.995" fill="none" stroke="#3f4854" stroke-width="0.09" />
+    <path id="collection-hopper" data-vizi-fill-target="true" d="M 0.38 5.58 H 2.895 L 1.637 8.14 Z" fill="url(#filterConeFill)" stroke="#5b6470" stroke-width="0.105" />
+    <path id="cone-highlight" d="M 0.72 5.82 L 1.45 7.76" fill="none" stroke="#ffffff" stroke-width="0.055" opacity="0.5" />
+    <path id="discharge-neck" data-vizi-fill-target="true" d="M 1.31 7.94 H 1.965 V 8.34 H 1.31 Z" fill="url(#filterNeckFill)" stroke="#46515c" stroke-width="0.07" />
   </g>
 </svg>

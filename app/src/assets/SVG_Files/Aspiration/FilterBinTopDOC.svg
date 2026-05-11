@@ -1,15 +1,22 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 0.90865301 1.611569" preserveAspectRatio="xMidYMid meet" kewidth="56.383" keheight="100" eType="DOC" stroke="#808080" stroke-width="0.0242" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 0.90865301 1.611569" preserveAspectRatio="xMidYMid meet" kewidth="56.383" keheight="100" eType="DOC" fill="#D7DADE" stroke="#66717d" stroke-width="0.022" stroke-linejoin="round" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+
   <defs id="defs1">
-    <linearGradient id="swatch1">
-      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    <linearGradient id="filterShellFill" x1="0.08" y1="0.06" x2="0.84" y2="1.52" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#f9fbfd" />
+      <stop offset="45%" stop-color="#d8dee5" />
+      <stop offset="100%" stop-color="#9aa5b1" />
+    </linearGradient>
+    <linearGradient id="filterCapFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#b7c0ca" />
     </linearGradient>
   </defs>
-  <g id="layer1" transform="translate(-15.994686,-14.431972)">
-    <path d="m 16.024686,14.461972 v 0.366422 h 0.847686 v -0.366422 z m 0.001,0.367456 v 1.184113 h 0.847653 v -1.184113 z" id="body" stroke-width="0.0242" stroke-dasharray="none" fill="#D7DADE" />
-    <text id="text1" x="16.213566" y="15.382879" fill="#000000" stroke="#808080" stroke-width="0.0242" stroke-dasharray="none" style="-inkscape-font-specification:&#x27;SansSerif, Normal&#x27;font-family:SansSerif;font-size:0.352778px;font-stretch:normal;font-style:normal;font-variant:normal;font-variant-caps:normal;font-variant-east-asian:normal;font-variant-ligatures:normal;font-variant-numeric:normal;font-weight:normal">
-      <tspan id="tspan1" x="16.213566" y="15.382879" stroke-width="0.0242" stroke-dasharray="none" style="-inkscape-font-specification:&#x27;SansSerif, Normal&#x27;font-family:SansSerif;font-size:0.352778px;font-stretch:normal;font-style:normal;font-variant:normal;font-variant-caps:normal;font-variant-east-asian:normal;font-variant-ligatures:normal;font-variant-numeric:normal;font-weight:normal">FC</tspan>
-    </text>
-    <path d="m 16.166493,15.03968 v 0.427477 h 0.563855 V 15.03968 Z" id="path1" fill="transparent" stroke="#808080" stroke-width="0.0242" stroke-dasharray="none" stroke-opacity="1" />
+  <g id="layer1">
+    <rect id="shadow" x="0.095" y="0.09" width="0.75" height="1.44" rx="0.055" fill="#111827" opacity="0.15" stroke="none" />
+    <rect id="top-cap" data-vizi-fill-target="true" x="0.075" y="0.06" width="0.76" height="0.27" rx="0.028" fill="url(#filterCapFill)" stroke="#5b6470" stroke-width="0.026" />
+    <rect id="body" data-vizi-fill-target="true" x="0.085" y="0.3" width="0.74" height="1.22" rx="0.06" fill="url(#filterShellFill)" stroke="#5b6470" stroke-width="0.03" />
+    <path id="body-highlight" d="M 0.18 0.42 V 1.36" fill="none" stroke="#ffffff" stroke-width="0.017" opacity="0.58" />
+    <path id="lower-rim" d="M 0.13 1.36 H 0.78" fill="none" stroke="#3f4854" stroke-width="0.023" />
   </g>
 </svg>
