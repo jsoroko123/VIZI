@@ -1,37 +1,33 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
-<svg
-  width="0.7747708in"
-  height="0.083987251in"
-  viewBox="0 0 19.67918 2.1332762"
-  version="1.1"
-  xmlns="http://www.w3.org/2000/svg"
-  kewidth="100"
-  keheight="10.84"
-  eType="ConveyorPaddle"
- fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
-  <defs>
-    <linearGradient id="shellFill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#e7e9ec" />
-      <stop offset="100%" stop-color="#b8bdc4" />
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 19.67918 2.1332762" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="10.84" eType="ConveyorPaddle" fill="#D7DADE" stroke="#66717d" stroke-linejoin="round" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+
+  <defs id="defs1">
+    <linearGradient id="convBodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="45%" stop-color="#d5dce4" />
+      <stop offset="100%" stop-color="#929da9" />
+    </linearGradient>
+    <linearGradient id="convCapFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#eef2f6" />
+      <stop offset="100%" stop-color="#7d8996" />
+    </linearGradient>
+    <linearGradient id="convDarkFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#aeb8c3" />
+      <stop offset="100%" stop-color="#596574" />
     </linearGradient>
   </defs>
-
-  <g stroke="#808080" stroke-linecap="round" stroke-linejoin="round">
-    <rect id="body" x="0.10" y="0.10" width="19.48" height="1.93" rx="0.35" fill="url(#shellFill)" stroke-width="0.16" />
-    <path d="M0.56 1.06H19.12" fill="none" stroke="#808080" stroke-width="0.07" />
-
-    <g id="g1" fill="none" stroke="#808080" stroke-width="0.12">
-      <path d="M2.10 0.43V1.70" />
-      <path d="M4.20 0.43V1.70" />
-      <path d="M6.30 0.43V1.70" />
-      <path d="M8.40 0.43V1.70" />
-      <path d="M10.50 0.43V1.70" />
-      <path d="M12.60 0.43V1.70" />
-      <path d="M14.70 0.43V1.70" />
-      <path d="M16.80 0.43V1.70" />
-    </g>
-
-    <circle cx="0.64" cy="1.06" r="0.10" fill="#D7DADE" stroke-width="0.06" />
-    <circle cx="19.04" cy="1.06" r="0.10" fill="#D7DADE" stroke-width="0.06" />
+  <g id="layer1">
+    <rect id="shadow" x="0.4874" y="0.5444" width="18.892" height="1.536" rx="0.2765" fill="#111827" opacity="0.13" stroke="none" />
+    <rect id="body" data-vizi-fill-target="true" x="0.3936" y="0.2987" width="18.892" height="1.536" rx="0.2765" fill="url(#convBodyFill)" stroke="#5b6470" stroke-width="0.0853" />
+    <path id="tube-highlight" d="M 1.1493 0.6673 H 18.5299" fill="none" stroke="#ffffff" stroke-width="0.0469" opacity="0.55" />
+    <path id="shaft" d="M 1.3382 1.0666 H 18.341" fill="none" stroke="#525d69" stroke-width="0.0811" opacity="0.78" />
+    <path id="paddle-1" d="M 2.4927 1.0666 L 2.9545 1.466" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-2" d="M 4.5918 1.0666 L 5.0536 0.6673" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-3" d="M 6.6909 1.0666 L 7.1527 1.466" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-4" d="M 8.79 1.0666 L 9.2518 0.6673" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-5" d="M 10.8891 1.0666 L 11.351 1.466" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-6" d="M 12.9883 1.0666 L 13.4501 0.6673" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-7" d="M 15.0874 1.0666 L 15.5492 1.466" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-8" d="M 17.1865 1.0666 L 17.6483 0.6673" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
   </g>
 </svg>

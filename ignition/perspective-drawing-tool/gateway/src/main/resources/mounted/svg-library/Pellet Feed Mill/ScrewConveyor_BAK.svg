@@ -1,7 +1,25 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 31.88 16.94" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="53.137" eType="ScrewConveyor_BAK" stroke="#808080" stroke-width="0.4782" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
-  <line id="Top_Horizontal_Line" x1="1" x2="30.88" y1="1" y2="1" fill="transparent" stroke-width="0.4782" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M27.15,1v9.34c0,3.09-2.51,5.6-5.6,5.6s-5.6-2.51-5.6-5.6v-3.83,3.83c0,3.09-2.51,5.6-5.6,5.6s-5.6-2.51-5.6-5.6V1" id="body" stroke-width="0.4782" stroke-linejoin="round" fill="#D7DADE" />
-  <path d="M11.54,12.84c-2.37,0-4.28-1.92-4.28-4.28,0-1.89,1.53-3.43,3.43-3.43,1.51,0,2.74,1.23,2.74,2.74,0,1.21-.98,2.19-2.19,2.19-.97,0-1.75-.79-1.75-1.75,0-.78.63-1.4,1.4-1.4" id="Left_Auger" fill="transparent" stroke-width="0.4782" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M20.34,12.84c2.37,0,4.28-1.92,4.28-4.28,0-1.89-1.53-3.43-3.43-3.43-1.51,0-2.74,1.23-2.74,2.74,0,1.21.98,2.19,2.19,2.19.97,0,1.75-.79,1.75-1.75,0-.78-.63-1.4-1.4-1.4" id="Right_Auger" fill="transparent" stroke-width="0.4782" stroke-linecap="round" stroke-linejoin="round" />
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 31.88 16.94" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="53.137" eType="Motor" fill="#D7DADE" stroke="#66717d" stroke-linejoin="round" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+
+  <defs id="defs1">
+    <linearGradient id="convBodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="45%" stop-color="#d5dce4" />
+      <stop offset="100%" stop-color="#929da9" />
+    </linearGradient>
+    <linearGradient id="convCapFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#eef2f6" />
+      <stop offset="100%" stop-color="#7d8996" />
+    </linearGradient>
+    <linearGradient id="convDarkFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#aeb8c3" />
+      <stop offset="100%" stop-color="#596574" />
+    </linearGradient>
+  </defs>
+  <g id="layer1">
+    <line id="Top_Horizontal_Line" x1="1" x2="30.88" y1="1" y2="1" fill="none" stroke="#4b5563" stroke-width="0.52" />
+    <path id="body" data-vizi-fill-target="true" d="M 27.15 1 V 10.34 C 27.15 13.43 24.64 15.94 21.55 15.94 C 18.46 15.94 15.95 13.43 15.95 10.34 V 6.51 V 10.34 C 15.95 13.43 13.44 15.94 10.35 15.94 C 7.26 15.94 4.75 13.43 4.75 10.34 V 1 Z" fill="url(#convBodyFill)" stroke="#5b6470" stroke-width="0.52" />
+    <path id="body-highlight" d="M 5.2 1.95 H 26.7" fill="none" stroke="#ffffff" stroke-width="0.22" opacity="0.58" />
+    <path id="Left_Auger" d="M 11.54 12.84 C 9.17 12.84 7.26 10.92 7.26 8.56 C 7.26 6.67 8.79 5.13 10.69 5.13 C 12.2 5.13 13.43 6.36 13.43 7.87 C 13.43 9.08 12.45 10.06 11.24 10.06 C 10.27 10.06 9.49 9.27 9.49 8.31 C 9.49 7.53 10.12 6.91 10.89 6.91" fill="none" stroke="#64717e" stroke-width="0.58" /><path id="Right_Auger" d="M 20.34 12.84 C 22.71 12.84 24.62 10.92 24.62 8.56 C 24.62 6.67 23.09 5.13 21.19 5.13 C 19.68 5.13 18.45 6.36 18.45 7.87 C 18.45 9.08 19.43 10.06 20.64 10.06 C 21.61 10.06 22.39 9.27 22.39 8.31 C 22.39 7.53 21.76 6.91 20.99 6.91" fill="none" stroke="#64717e" stroke-width="0.58" />
+  </g>
 </svg>

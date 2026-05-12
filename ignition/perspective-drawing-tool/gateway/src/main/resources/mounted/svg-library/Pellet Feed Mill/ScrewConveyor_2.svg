@@ -1,10 +1,25 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 31.88 16.94" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="53.137" eType="ScrewConveyor_2" stroke="#808080" stroke-width="0.4782" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
-  <defs id="defs1" />
-  <line id="Top_Horizontal_Line" x1="1" x2="30.88" y1="1" y2="1" fill="transparent" stroke-width="0.4782" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="m 27.15,1 v 7.4 c 0,3.737397 -5.450859,8.090536 -10.936,8.24139 C 10.503672,16.798438 4.7492166,12.594144 4.7495,8.4 L 4.75,1" id="body" stroke-width="0.4782" stroke-linejoin="round" fill="#D7DADE" />
-  <g id="g4">
-    <line id="Top_Horizontal_Line-3" x1="15.94975" x2="15.94975" y1="2" y2="15.4" fill="transparent" stroke-width="0.4782" stroke-dasharray="none" stroke-linecap="round" stroke-linejoin="round" />
-    <path d="m 15.914647,3.0038535 -3.928116,1.0109122 8.087297,2.1, -8.029531,2.5 8.029531,1.9929417 -6.989736,1.992941 6.094357,1.5, -4.130299,1.5 0.866497,0.259949" id="path4" fill="#D7DADE" stroke-width="0.4782" stroke-dasharray="none" stroke-opacity="1" />
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 31.88 16.94" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="53.137" eType="Motor" fill="#D7DADE" stroke="#66717d" stroke-linejoin="round" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+
+  <defs id="defs1">
+    <linearGradient id="convBodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="45%" stop-color="#d5dce4" />
+      <stop offset="100%" stop-color="#929da9" />
+    </linearGradient>
+    <linearGradient id="convCapFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#eef2f6" />
+      <stop offset="100%" stop-color="#7d8996" />
+    </linearGradient>
+    <linearGradient id="convDarkFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#aeb8c3" />
+      <stop offset="100%" stop-color="#596574" />
+    </linearGradient>
+  </defs>
+  <g id="layer1">
+    <line id="Top_Horizontal_Line" x1="1" x2="30.88" y1="1" y2="1" fill="none" stroke="#4b5563" stroke-width="0.52" />
+    <path id="body" data-vizi-fill-target="true" d="M 27.15 1 V 8.4 C 27.15 12.14 21.7 16.49 16.214 16.64 C 10.504 16.8 4.749 12.594 4.75 8.4 V 1 Z" fill="url(#convBodyFill)" stroke="#5b6470" stroke-width="0.52" />
+    <path id="body-highlight" d="M 5.2 1.95 H 26.7" fill="none" stroke="#ffffff" stroke-width="0.22" opacity="0.58" />
+    <path id="path4" d="M 15.95 2.7 L 12.0 4.0 L 20.1 6.1 L 12.05 8.5 L 20.05 10.6 L 13.1 12.6 L 19.18 14.1 L 15.05 15.6" fill="none" stroke="#64717e" stroke-width="0.58" stroke-linejoin="round" />
   </g>
 </svg>

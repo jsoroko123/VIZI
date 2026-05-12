@@ -1,32 +1,41 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 300 47.25" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="15.75" eType="ConveyorHeadNew" stroke="#808080" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
-  <defs id="defs4" />
-  <circle cx="160.53999" cy="23.75" id="body" r="7.5" stroke-width="4.5" stroke-miterlimit="10" style="classes:" fill="#D7DADE" />
-  <text id="Motor" x="174.82578" y="28.041536" style="classes:">
-    <tspan id="tspan7" x="174.82578" y="28.041536" />
-  </text>
-  <g id="Motor_Amp" fill="transparent" stroke="#808080">
-    <rect height="45" id="Motor_Amp_Fill" width="90" x="1" y="1" fill="#D7DADE" stroke-width="4.5" style="classes:" />
-    <rect height="45" id="Motor_Amp_Outline" width="90" x="1" y="1" stroke="#808080" style="classes:" fill="#D7DADE" />
-    <text id="Motor_Amp_Readout" x="36.810001" y="28.74" style="classes:">
-      <tspan id="tspan12" x="36.810001" y="28.74" fill="#000000" stroke="#808080" stroke-opacity="1" />
-      <tspan id="tspan14" x="45.150002" y="28.74" style="classes:">A</tspan>
-    </text>
-  </g>
-  <g id="Mode_Container" fill="#D7DADE">
-    <rect height="45" id="Mode_Fill" width="45" x="101" y="1.25" fill="#D7DADE" stroke-width="4.5" style="classes:" />
-    <rect height="45" id="Mode_Outline" width="45" x="101" y="1.25" stroke="#808080" style="classes:" fill="#D7DADE" />
-    <polyline id="Arrow_Right" points="137.7 20.66 141.8 23.46 137.7 26.27" stroke="#808080" style="classes:" />
-    <g id="Mode" fill="#D7DADE">
-      <rect height="20" id="Mode_Fill-2" width="20" x="113.5" y="13.46" fill="#D7DADE" stroke-width="4.5" style="classes:" />
-      <rect height="20" id="Mode_Outline-2" width="20" x="113.5" y="13.46" stroke-width="4.5" style="border-style:none;classes:;outline-style:solid" fill="#D7DADE" />
-      <g id="Mode_Letter" fill="#000000">
-        <text id="text25" transform="translate(119.35,27.32)" style="classes:">
-          <tspan id="tspan23" x="0" y="0" fill="#000000" style="classes:" />
-          <g />
-        </text>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 300 47.25" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="15.75" eType="ConveyorHeadNew" fill="#D7DADE" stroke="#66717d" stroke-linejoin="round" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+
+  <defs id="defs1">
+    <linearGradient id="convBodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="45%" stop-color="#d5dce4" />
+      <stop offset="100%" stop-color="#929da9" />
+    </linearGradient>
+    <linearGradient id="convCapFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#eef2f6" />
+      <stop offset="100%" stop-color="#7d8996" />
+    </linearGradient>
+    <linearGradient id="convDarkFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#aeb8c3" />
+      <stop offset="100%" stop-color="#596574" />
+    </linearGradient>
+  </defs>
+  <g id="layer1">
+    <circle id="body" data-vizi-fill-target="true" cx="160.5" cy="23.625" r="7.56" fill="url(#convCapFill)" stroke="#4b5563" stroke-width="2.131" />
+    <circle id="pulley-highlight" cx="158.0808" cy="21.2058" r="1.6632" fill="#ffffff" opacity="0.55" stroke="none" />
+    <path id="drive-link" d="M 145.3875 23.625 H 148.782" fill="none" stroke="#5b6470" stroke-width="1.2474" opacity="0.65" />
+    <g id="Motor_Amp">
+      <rect id="Motor_Amp_Fill" data-vizi-fill-target="true" x="1.4175" y="1.4175" width="90" height="44.415" rx="3.78" fill="url(#convBodyFill)" stroke="none" />
+      <rect id="Motor_Amp_Outline" x="1.4175" y="1.4175" width="90" height="44.415" rx="3.78" fill="none" stroke="#5b6470" stroke-width="1.8711" />
+      <path id="Motor_Amp_Highlight" d="M 8.6175 10.8675 H 84.2175" fill="none" stroke="#ffffff" stroke-width="0.8836" opacity="0.6" />
+      <text id="Motor_Amp_Readout" opacity="0" x="39.2175" y="28.35" fill="#111827" stroke="none" font-family="Arial, sans-serif" font-size="12" font-weight="700"><tspan id="tspan12" x="39.2175" y="28.35" /><tspan id="tspan14" x="48.2175" y="28.35"></tspan></text>
+    </g>
+    <g id="Mode_Container">
+      <rect id="Mode_Fill" data-vizi-fill-target="true" x="100.5" y="1.4175" width="44.8875" height="44.415" rx="3.3075" fill="url(#convBodyFill)" stroke="none" />
+      <rect id="Mode_Outline" x="100.5" y="1.4175" width="44.8875" height="44.415" rx="3.3075" fill="none" stroke="#5b6470" stroke-width="1.8711" />
+      <polyline id="Arrow_Right" points="135.5122,20.79 140.001,23.625 135.5122,26.46" fill="none" stroke="#4b5563" stroke-width="1.1954" />
+      <polyline id="Arrow_Left" points="110.3752,26.46 105.8865,23.625 110.3752,20.79" fill="none" stroke="#4b5563" stroke-width="1.1954" />
+      <g id="Mode">
+        <rect id="Mode_Fill-2" data-vizi-fill-target="true" x="113.5174" y="14.175" width="18.8527" height="18.9" rx="1.89" fill="url(#convCapFill)" stroke="none" />
+        <rect id="Mode_Outline-2" x="113.5174" y="14.175" width="18.8527" height="18.9" rx="1.89" fill="none" stroke="#4b5563" stroke-width="1.1694" />
+        <g id="Mode_Letter"><text id="text25" x="122.9437" y="28.35" text-anchor="middle" fill="#111827" stroke="none" font-family="Arial, sans-serif" font-size="12" font-weight="700"><tspan id="tspan23" x="122.9437" y="28.35" /></text></g>
       </g>
     </g>
-    <polyline id="Arrow_Left" points="109.3 26.27 105.2 23.46 109.3 20.66" stroke="#808080" style="classes:" />
   </g>
 </svg>

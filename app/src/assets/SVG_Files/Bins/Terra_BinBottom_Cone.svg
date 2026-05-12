@@ -6,16 +6,16 @@
    viewBox="0 0 0.93989098 0.41993407"
    version="1.1"
    id="svg1"
-   xmlns="http://www.w3.org/2000/svg" kewidth="100" keheight="44.679" eType="Bin" stroke="#808080" stroke-width="0.0141" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+   xmlns="http://www.w3.org/2000/svg" kewidth="100" keheight="44.679" eType="Bin" stroke="#808080" stroke-width="0.0141" stroke-linejoin="round" stroke-linecap="round" fill="url(#binShellFill)">
   
-  <defs
-     id="defs1">
-    <linearGradient
-       id="swatch1">
-      <stop
-         style="stop-color:#e7e9ec;stop-opacity:1"
-         offset="0"
-         id="stop1" />
+  <defs id="defs1">
+    <linearGradient id="binShellFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f3f6f6" />
+      <stop offset="48%" stop-color="#d4dddd" />
+      <stop offset="100%" stop-color="#9da8a8" />
+    </linearGradient>
+    <linearGradient id="swatch1">
+      <stop style="stop-color:#e7e9ec;stop-opacity:1" offset="0" id="stop1" />
     </linearGradient>
   </defs>
   <g
@@ -23,7 +23,8 @@
      transform="translate(-16.000487,-14.453006)">
     <path
        id="body"
-       style="fill:#D7DADE;fill-opacity:1;stroke:#808080;stroke-width:0.0141;stroke-dasharray:none;stroke-opacity:1"
-       d="m 16.026656,14.462995 0.443776,0.39655 0.443777,-0.39655 z" />
+       style="fill:url(#binShellFill);fill-opacity:1;stroke:#808080;stroke-width:0.0141;stroke-dasharray:none;stroke-opacity:1"
+       d="m 16.026656,14.462995 0.443776,0.39655 0.443777,-0.39655 z"
+         data-vizi-fill-target="true" />
   </g>
 </svg>

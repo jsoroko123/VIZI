@@ -41,24 +41,28 @@
        y2="0">
       <stop
          offset="0"
-         stop-color="#cfd6d6"
+         stop-color="#aeb9b9"
          id="stop1" />
       <stop
-         offset="0.28"
-         stop-color="#eef2f2"
+         offset="0.16"
+         stop-color="#dfe7e7"
          id="stop2" />
       <stop
-         offset="0.5"
-         stop-color="#ffffff"
+         offset="0.38"
+         stop-color="#fbfdfd"
          id="stop3" />
       <stop
-         offset="0.72"
-         stop-color="#d6dddd"
+         offset="0.58"
+         stop-color="#cfd8d8"
          id="stop4" />
       <stop
-         offset="1"
-         stop-color="#bfc8c8"
+         offset="0.82"
+         stop-color="#e8eeee"
          id="stop5" />
+      <stop
+         offset="1"
+         stop-color="#9ca8a8"
+         id="stop5b" />
     </linearGradient>
     <linearGradient
        id="darkMetal"
@@ -70,16 +74,20 @@
        gradientUnits="userSpaceOnUse">
       <stop
          offset="0"
-         stop-color="#b8c0c0"
+         stop-color="#9aa5a5"
          id="stop6" />
       <stop
-         offset="0.5"
-         stop-color="#f6f8f8"
+         offset="0.35"
+         stop-color="#eef3f3"
          id="stop7" />
       <stop
-         offset="1"
-         stop-color="#aeb8b8"
+         offset="0.72"
+         stop-color="#c1cbcb"
          id="stop8" />
+      <stop
+         offset="1"
+         stop-color="#838f8f"
+         id="stop8b" />
     </linearGradient>
     <linearGradient
        inkscape:collect="always"
@@ -96,13 +104,13 @@
      id="flour_bin"
      inkscape:label="Flour Bin"
      fill="none"
-     stroke="#1f1f1f"
+     stroke="#808080"
      stroke-width="5"
      stroke-linejoin="round"
      stroke-linecap="round">
     <g
        id="support_structure"
-       fill="#d6dddd">
+       fill="url(#metal)">
       <rect
          id="left_leg_outer"
          x="178"
@@ -144,14 +152,15 @@
     <path
        id="top_cone"
        d="M145 240 L400 92 L655 240 Z"
-       fill="url(#metal)" />
+       fill="url(#metal)"
+         data-vizi-fill-target="true" />
     <ellipse
        id="top_rim_outer"
        cx="400"
        cy="240"
        rx="255"
        ry="25"
-       fill="#cfd6d6" />
+       fill="url(#darkMetal)" />
     <path
        id="top_rim_inner"
        d="M148 240 C250 258 550 258 652 240"
@@ -171,14 +180,14 @@
        cy="80"
        rx="35"
        ry="12"
-       fill="#eef2f2" />
+       fill="url(#metal)" />
     <ellipse
        id="vent_bottom"
        cx="400"
        cy="110"
        rx="35"
        ry="12"
-       fill="#cfd6d6" />
+       fill="url(#darkMetal)" />
     <!-- manway hatch -->
     <!-- cylindrical shell -->
     <rect
@@ -187,7 +196,8 @@
        y="240"
        width="510"
        height="500"
-       fill="url(#metal)" />
+       fill="url(#metal)"
+         data-vizi-fill-target="true" />
     <line
        id="shell_band_1"
        x1="145"
@@ -226,7 +236,7 @@
          rx="34"
          ry="34"
          fill="#f9f9f9"
-         stroke="#333"
+         stroke="#808080"
          stroke-width="5" />
       <rect
          id="bin_label_inner"
@@ -237,7 +247,7 @@
          rx="22"
          ry="22"
          fill="none"
-         stroke="#333"
+         stroke="#808080"
          stroke-width="4" />
       <text
          id="bin_label_text"
@@ -253,10 +263,24 @@
     <!-- hopper -->
     <path
        id="hopper"
-       d="M 208.17668,883.209 594.90815,882.56225 480.25037,1000.6152 H 319.73978 Z"
+       d="M 145,740 C 252,762 548,762 655,740 L 480.25037,1000.6152 H 319.73978 Z"
        fill="url(#metal)"
-       sodipodi:nodetypes="ccccc"
-       style="fill:url(#metal);stroke-width:3.76977" />
+       sodipodi:nodetypes="cccccc"
+       style="fill:url(#metal);stroke-width:3.76977"
+         data-vizi-fill-target="true" />
+    <path
+       id="hopper_top_rim"
+       d="M 145,740 C 252,762 548,762 655,740"
+       fill="none"
+       stroke-width="4"
+       opacity="0.82" />
+    <path
+       id="hopper_center_seam"
+       d="M 400,758 V 1000"
+       fill="none"
+       stroke-width="2.2"
+       stroke-dasharray="10, 12"
+       opacity="0.48" />
     <!-- outlet slide gate -->
     <g
        id="outlet_slide_gate">
@@ -265,21 +289,21 @@
          cy="1000"
          rx="72"
          ry="16"
-         fill="#d9dfdf"
+         fill="url(#darkMetal)"
          id="ellipse10" />
       <rect
          x="340"
          y="1000"
          width="120"
          height="34"
-         fill="#d9dfdf"
+         fill="url(#darkMetal)"
          id="rect11" />
       <rect
          x="325"
          y="1034"
          width="150"
          height="20"
-         fill="#c8d0d0"
+         fill="url(#darkMetal)"
          id="rect12" />
       <rect
          x="350"
@@ -293,21 +317,21 @@
          cy="1124"
          rx="62"
          ry="12"
-         fill="#d9dfdf"
+         fill="url(#darkMetal)"
          id="ellipse13" />
       <rect
          x="315"
          y="1110"
          width="28"
          height="18"
-         fill="#d9dfdf"
+         fill="url(#darkMetal)"
          id="rect14" />
       <rect
          x="457"
          y="1110"
          width="28"
          height="18"
-         fill="#d9dfdf"
+         fill="url(#darkMetal)"
          id="rect15" />
     </g>
     <!-- support legs -->

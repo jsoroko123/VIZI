@@ -279,6 +279,13 @@ const isBinLikeEType = (value) => {
   return key === "bin" || key.startsWith("bin") || key.includes("silo");
 };
 
+const isConveyorScrewIdentity = (value) => {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return key.includes("conveyorscrew") ||
+    key.includes("screwconveyor") ||
+    (key.includes("conveyor") && key.includes("screw"));
+};
+
 const normalizeWidgetKindKey = (value) =>
   String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 
@@ -530,6 +537,41 @@ function CanvasSvg({
       || paint === "gray"
       || paint === "grey";
   };
+  const isLegacyDarkSvgStrokePaint = (value) => {
+    const paint = normalizePaintForDefaultCompare(value);
+    return paint === "#000"
+      || paint === "#000000"
+      || paint === "black"
+      || paint === "rgb(0,0,0)"
+      || paint === "rgba(0,0,0,1)"
+      || paint === "#111"
+      || paint === "#111111"
+      || paint === "#1f1f1f"
+      || paint === "#222"
+      || paint === "#222222"
+      || paint === "#2e2e2e"
+      || paint === "#333"
+      || paint === "#333333";
+  };
+  const normalizeBinSvgDefaultStroke = (inner) => {
+    const source = String(inner || "");
+    if (!source) return source;
+    let next = source.replace(/\bstroke\s*=\s*(["'])([^"']*)\1/gi, (match, quote, strokeValue) => (
+      isLegacyDarkSvgStrokePaint(strokeValue) ? `stroke=${quote}${themeStrokeDefault}${quote}` : match
+    ));
+    next = next.replace(/\bstyle\s*=\s*(["'])([^"']*)\1/gi, (match, quote, styleBody) => {
+      const body = String(styleBody || "").replace(
+        /stroke\s*:\s*([^;]+)(;?)/gi,
+        (strokeMatch, strokeValue, suffix) => (
+          isLegacyDarkSvgStrokePaint(strokeValue)
+            ? `stroke:${themeStrokeDefault}${suffix || ";"}`
+            : strokeMatch
+        )
+      );
+      return `style=${quote}${body}${quote}`;
+    });
+    return next;
+  };
   const [hoverOverlayId, setHoverOverlayId] = useState(null);
   const [viewportScroll, setViewportScroll] = useState({ x: 0, y: 0 });
   const [smoothedCollabCursors, setSmoothedCollabCursors] = useState([]);
@@ -618,6 +660,7 @@ function CanvasSvg({
   const normalizeEmbeddedIgnitionStyleClassesCacheRef = useRef(new Map());
   const normalizedOverlayBaseInnerByIdRef = useRef(new Map());
   const overlayVisualResultByIdRef = useRef(new Map());
+  const ignitionStyleClassPaintCacheRef = useRef(new Map());
   const emptyPolylineCrossingGapsByShapeIdRef = useRef(new Map());
   const replaceSvgTextPlaceholders = (innerSvg, labels = {}) => {
     const source = String(innerSvg || "");
@@ -5529,14 +5572,24 @@ function CanvasSvg({
       return false;
     }
 
+    const overlayEType = String(overlay?.eType || "").trim();
+    const viewParams = overlayEType
+      ? {
+        ...params,
+        eType: overlayEType,
+        etype: overlayEType,
+        equipmentType: overlayEType,
+        equipment_type: overlayEType,
+      }
+      : params;
     const popupId = `widget-view-${overlayId}`;
     const title = String(overlay?.widget?.title || overlay?.name || viewPath.split(/[\\/]/).pop() || "View").trim();
-    const position = getWidgetOpenViewPopupPosition(overlay, params);
+    const position = getWidgetOpenViewPopupPosition(overlay, viewParams);
     const popupConfig = {
       id: popupId,
       viewPath,
-      viewParams: params,
-      params,
+      viewParams,
+      params: viewParams,
       title,
       modal: false,
       overlayDismiss: false,
@@ -5727,6 +5780,11 @@ function CanvasSvg({
     if (!base || !target) return String(baseColor || "");
     const ratio = Math.max(0, Math.min(1, Number(amount) || 0));
     return rgbToCssColor(base.map((channel, index) => channel + (target[index] - channel) * ratio));
+  };
+  const getActiveOutlineStrokeColor = (value) => {
+    const color = String(value || "").trim();
+    if (!parseCssRgbChannels(color)) return color;
+    return mixCssColor(color, "#000000", 0.36) || color;
   };
   const applyBinVisualStateToSvg = (innerSvg, options = {}) => {
     const source = String(innerSvg || "");
@@ -5929,7 +5987,7 @@ function CanvasSvg({
         setStylePaint(node, "fill", `url(#${gradientId})`);
         node.setAttribute("fill-opacity", "1");
         if (!node.getAttribute("stroke")) {
-          node.setAttribute("stroke", "#2e2e2e");
+          node.setAttribute("stroke", "#808080");
         }
         return true;
       };
@@ -6624,18 +6682,20 @@ function CanvasSvg({
       return String(match?.[1] || "").trim();
     };
     const gradientTintColor = (baseColor, sourceColor, index, count) => {
+      const t = count > 1 ? index / Math.max(1, count - 1) : 0.5;
+      const positionalShade = t <= 0.45 ? 0 : Math.min(0.085, (t - 0.45) * 0.15);
       const sourceChannels = parseCssRgbChannels(sourceColor);
       if (sourceChannels) {
         const [r, g, b] = sourceChannels;
         const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-        if (luminance >= 0.56) {
-          return mixCssColor(baseColor, "#ffffff", Math.min(0.62, 0.1 + (luminance - 0.56) * 1.35));
-        }
-        return mixCssColor(baseColor, "#000000", Math.min(0.42, 0.06 + (0.56 - luminance) * 0.9));
+        const sourceShade = luminance >= 0.72
+          ? 0
+          : Math.min(0.08, 0.012 + (0.72 - luminance) * 0.12);
+        const shade = Math.max(positionalShade, sourceShade);
+        return shade > 0 ? (mixCssColor(baseColor, "#000000", shade) || baseColor) : baseColor;
       }
-      const t = count > 1 ? index / Math.max(1, count - 1) : 0.5;
-      if (t < 0.45) return mixCssColor(baseColor, "#ffffff", 0.36 - t * 0.28);
-      if (t > 0.55) return mixCssColor(baseColor, "#000000", 0.08 + (t - 0.55) * 0.44);
+      if (t < 0.5) return baseColor;
+      if (t > 0.55) return mixCssColor(baseColor, "#000000", 0.02 + (t - 0.55) * 0.12);
       return baseColor;
     };
     const makeStableSvgIdSuffix = (text) => {
@@ -6764,9 +6824,9 @@ function CanvasSvg({
           const stops = Array.isArray(sourceStops) && sourceStops.length ? sourceStops : [];
           if (!stops.length) {
             [
-              ["0%", mixCssColor(nextFill, "#ffffff", 0.38), "1"],
-              ["48%", nextFill, "1"],
-              ["100%", mixCssColor(nextFill, "#000000", 0.24), "1"],
+              ["0%", nextFill, "1"],
+              ["55%", nextFill, "1"],
+              ["100%", mixCssColor(nextFill, "#000000", 0.08), "1"],
             ].forEach(([offset, color, opacity]) => {
               const stop = doc.createElementNS(ns, "stop");
               stop.setAttribute("offset", offset);
@@ -7133,7 +7193,6 @@ function CanvasSvg({
         );
       }
     };
-
     try {
       const wrapped = `<svg xmlns="http://www.w3.org/2000/svg">${String(inner || "")}</svg>`;
       const doc = new DOMParser().parseFromString(wrapped, "image/svg+xml");
@@ -7611,6 +7670,112 @@ function CanvasSvg({
     if (next) node.setAttribute("class", next);
   };
 
+  const normalizeComputedSvgPaintColor = (value, sentinels = []) => {
+    const raw = String(value || "").trim();
+    const compact = raw.replace(/\s+/g, "").toLowerCase();
+    if (
+      !raw ||
+      compact === "none" ||
+      compact === "transparent" ||
+      compact === "rgba(0,0,0,0)" ||
+      compact === "currentcolor" ||
+      sentinels.includes(compact)
+    ) {
+      return "";
+    }
+    return parseCssRgbChannels(raw) ? raw : "";
+  };
+  const inferIgnitionStyleClassPaintColor = (className) => {
+    const key = String(className || "")
+      .toLowerCase()
+      .replace(/\bpsc-/g, " ")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+    if (!key) return "";
+    if (/\b(fault|faulted|failed|failure|alarm|error|trip)\b/.test(key)) return "#ef4444";
+    if (/\b(stopping|stoping)\b/.test(key)) return "#f97316";
+    if (/\b(starting|startup|start)\b/.test(key)) return "#f59e0b";
+    if (/\b(running|run|active|started|dosing|measuring|open|enabled|on)\b/.test(key)) return "#22c55e";
+    if (/\b(stopped|idle|empty|emptied|off|disabled|inactive|nostate|no state)\b/.test(key)) return "#6b7280";
+    return "";
+  };
+
+  const resolveIgnitionStyleClassPaintColor = (className, preferredProperty = "fill") => {
+    const classText = String(className || "").trim();
+    const property = String(preferredProperty || "fill").trim().toLowerCase() === "stroke" ? "stroke" : "fill";
+    if (
+      !classText ||
+      typeof document === "undefined" ||
+      typeof window === "undefined" ||
+      typeof window.getComputedStyle !== "function"
+    ) {
+      return "";
+    }
+    const cache = ignitionStyleClassPaintCacheRef.current;
+    const cacheKey = `${property}|${classText}`;
+    const now = Date.now();
+    const cached = cache.get(cacheKey);
+    if (cached && now - cached.at < (cached.value ? 60000 : 1000)) {
+      return cached.value;
+    }
+    const ns = "http://www.w3.org/2000/svg";
+    const fillSentinel = "rgb(1, 2, 3)";
+    const strokeSentinel = "rgb(4, 5, 6)";
+    const colorSentinel = "rgb(7, 8, 9)";
+    const sentinels = [fillSentinel, strokeSentinel, colorSentinel].map((entry) =>
+      entry.replace(/\s+/g, "").toLowerCase()
+    );
+    let resolved = "";
+    let host = null;
+    try {
+      host = document.createElement("div");
+      host.style.cssText = [
+        "position:absolute",
+        "left:-10000px",
+        "top:-10000px",
+        "width:0",
+        "height:0",
+        "overflow:hidden",
+        "visibility:hidden",
+        `color:${colorSentinel}`,
+      ].join(";");
+      const svg = document.createElementNS(ns, "svg");
+      svg.setAttribute("width", "1");
+      svg.setAttribute("height", "1");
+      svg.setAttribute("viewBox", "0 0 1 1");
+      const rect = document.createElementNS(ns, "rect");
+      rect.setAttribute("class", classText);
+      rect.setAttribute("x", "0");
+      rect.setAttribute("y", "0");
+      rect.setAttribute("width", "1");
+      rect.setAttribute("height", "1");
+      rect.setAttribute("fill", fillSentinel);
+      rect.setAttribute("stroke", strokeSentinel);
+      svg.appendChild(rect);
+      host.appendChild(svg);
+      document.body.appendChild(host);
+      const computed = window.getComputedStyle(rect);
+      const fillColor = normalizeComputedSvgPaintColor(computed.getPropertyValue("fill") || computed.fill, sentinels);
+      const strokeColor = normalizeComputedSvgPaintColor(computed.getPropertyValue("stroke") || computed.stroke, sentinels);
+      const textColor = normalizeComputedSvgPaintColor(computed.getPropertyValue("color") || computed.color, sentinels);
+      const backgroundColor = normalizeComputedSvgPaintColor(
+        computed.getPropertyValue("background-color") || computed.backgroundColor,
+        sentinels
+      );
+      resolved = property === "stroke"
+        ? (strokeColor || fillColor || textColor || backgroundColor)
+        : (fillColor || textColor || backgroundColor || strokeColor);
+    } catch {
+      resolved = "";
+    } finally {
+      if (host?.parentNode) host.parentNode.removeChild(host);
+    }
+    if (cache.size > 240) cache.clear();
+    if (!resolved) resolved = inferIgnitionStyleClassPaintColor(classText);
+    cache.set(cacheKey, { value: resolved, at: now });
+    return resolved;
+  };
+
   const normalizeEmbeddedIgnitionStyleClasses = (inner) => {
     const source = String(inner || "");
     if (!source || !/classes\s*:/i.test(source) || typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") {
@@ -7708,7 +7873,7 @@ function CanvasSvg({
       .join("; ");
   };
 
-  const applyIgnitionStyleClassToSvg = (inner, className) => {
+  const applyIgnitionStyleClassToSvg = (inner, className, options = {}) => {
     const classText = String(className || "").trim();
     const source = String(inner || "");
     if (!source || !classText || typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") return source;
@@ -7717,6 +7882,13 @@ function CanvasSvg({
       const root = doc.documentElement;
       if (!root || root.nodeName.toLowerCase() !== "svg") return source;
       appendSvgClassName(root, classText);
+      const paintChildren = options?.paintChildren !== false;
+      if (!paintChildren) {
+        const serializer = new XMLSerializer();
+        return Array.from(root.childNodes)
+          .map((node) => serializer.serializeToString(node))
+          .join("");
+      }
       const nodes = root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline,line,text,use,g");
       nodes.forEach((node) => {
         const fillAttr = String(node.getAttribute("fill") || "").trim().toLowerCase();
@@ -7793,6 +7965,82 @@ function CanvasSvg({
     if (Number.isFinite(sy) && sy > 0) return sy;
     const s = Number(o?.scale);
     return Number.isFinite(s) && s > 0 ? s : 1;
+  };
+
+  const clampDynamicScrewFlightCount = (value) => (
+    Math.max(4, Math.min(96, Math.round(Number(value) || 0)))
+  );
+
+  const parseSvgNumericAttr = (tag, attrName) => {
+    const match = String(tag || "").match(new RegExp(`\\b${attrName}\\s*=\\s*(["'])([^"']+)\\1`, "i"));
+    const value = Number(match?.[2]);
+    return Number.isFinite(value) ? value : null;
+  };
+
+  const readSvgElementStartById = (inner, tagName, id) => {
+    const safeTag = String(tagName || "").replace(/[^a-zA-Z0-9:_-]/g, "");
+    const safeId = String(id || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (!safeTag || !safeId) return "";
+    return String(inner || "").match(new RegExp(`<${safeTag}\\b(?=[^>]*\\bid\\s*=\\s*(["'])${safeId}\\1)[^>]*>`, "i"))?.[0] || "";
+  };
+
+  const makeDynamicScrewFlightPoints = (inner, overlay, localBounds) => {
+    const bodyTag = readSvgElementStartById(inner, "rect", "body");
+    const bb = localBounds || {};
+    const boundsX = Number(bb.x);
+    const boundsY = Number(bb.y);
+    const boundsW = Number(bb.width);
+    const boundsH = Number(bb.height);
+    const fallbackW = Number.isFinite(boundsW) && boundsW > 0 ? boundsW : 20;
+    const fallbackH = Number.isFinite(boundsH) && boundsH > 0 ? boundsH : 2;
+    const bodyX = parseSvgNumericAttr(bodyTag, "x") ?? ((Number.isFinite(boundsX) ? boundsX : 0) + fallbackW * 0.02);
+    const bodyY = parseSvgNumericAttr(bodyTag, "y") ?? ((Number.isFinite(boundsY) ? boundsY : 0) + fallbackH * 0.14);
+    const bodyW = parseSvgNumericAttr(bodyTag, "width") ?? (fallbackW * 0.96);
+    const bodyH = parseSvgNumericAttr(bodyTag, "height") ?? (fallbackH * 0.72);
+    if (!(Number.isFinite(bodyW) && bodyW > 0 && Number.isFinite(bodyH) && bodyH > 0)) {
+      return "";
+    }
+    const sx = Math.max(0.0001, overlayScaleX(overlay));
+    const sy = Math.max(0.0001, overlayScaleY(overlay));
+    const stretchRatio = Math.max(0.2, Math.min(12, sx / sy));
+    const baseFlights = Math.max(6, Math.min(24, Math.round(bodyW / Math.max(bodyH * 1.18, 0.8))));
+    const flights = clampDynamicScrewFlightCount(baseFlights * stretchRatio);
+    const centerY = bodyY + bodyH / 2;
+    const topY = centerY - bodyH * 0.27;
+    const bottomY = centerY + bodyH * 0.27;
+    const points = [];
+    for (let i = 0; i <= flights; i += 1) {
+      const x = bodyX + (bodyW * i) / flights;
+      const y = i % 2 === 0 ? topY : bottomY;
+      points.push(`${Number(x).toFixed(4).replace(/0+$/, "").replace(/\.$/, "")},${Number(y).toFixed(4).replace(/0+$/, "").replace(/\.$/, "")}`);
+    }
+    return points.join(" ");
+  };
+
+  const applyDynamicConveyorScrewFlights = (inner, overlay, localBounds) => {
+    const points = makeDynamicScrewFlightPoints(inner, overlay, localBounds);
+    if (!points) return String(inner || "");
+    const flightMarkup = `<polyline id="auger-flight" points="${points}" fill="none" stroke="#6f7a86" stroke-width="0.0689" opacity="0.84" />`;
+    let out = String(inner || "");
+    if (/<polyline\b(?=[^>]*\bid\s*=\s*(["'])auger-flight\1)/i.test(out)) {
+      return out.replace(
+        /(<polyline\b(?=[^>]*\bid\s*=\s*(["'])auger-flight\2)[^>]*\bpoints\s*=\s*)(["'])([^"']*)(\3)/i,
+        `$1$3${points}$5`
+      );
+    }
+    if (/<path\b(?=[^>]*\bid\s*=\s*(["'])path14\1)[^>]*\/?>/i.test(out)) {
+      return out.replace(/<path\b(?=[^>]*\bid\s*=\s*(["'])path14\1)[^>]*\/?>/i, flightMarkup);
+    }
+    if (/<path\b(?=[^>]*\bid\s*=\s*(["'])path4\1)[^>]*\/?>/i.test(out)) {
+      return out.replace(/<path\b(?=[^>]*\bid\s*=\s*(["'])path4\1)[^>]*\/?>/i, flightMarkup);
+    }
+    if (/<path\b(?=[^>]*\bid\s*=\s*(["'])shaft\1)[^>]*\/?>/i.test(out)) {
+      return out.replace(/(<path\b(?=[^>]*\bid\s*=\s*(["'])shaft\2)[^>]*\/?>)/i, `$1\n    ${flightMarkup}`);
+    }
+    if (/<\/g>\s*$/i.test(out)) {
+      return out.replace(/<\/g>\s*$/i, `  ${flightMarkup}\n  </g>`);
+    }
+    return out.replace(/<\/g>\s*<\/svg>\s*$/i, `  ${flightMarkup}\n  </g>\n</svg>`);
   };
 
   const isStaticSvgOverlay = (o) => Boolean(o?.static || o?.isStatic || o?.staticSvg);
@@ -9972,6 +10220,15 @@ function CanvasSvg({
       }
 
       const overlayEType = String(overlay?.eType || "").trim().toLowerCase();
+      const screwIdentityText = [
+        overlayEType,
+        overlay?.sourceKey,
+        overlay?.name,
+        overlay?.label,
+        overlay?.type,
+        /\bid\s*=\s*(["'])auger-flight\1/i.test(String(overlay?.inner || "")) ? "ConveyorScrew" : "",
+      ].join(" ");
+      const isConveyorScrewOverlayVisual = isConveyorScrewIdentity(screwIdentityText);
       const isStaticOverlay = isStaticSvgOverlay(overlay);
       const isDiverterOverlay = isDiverterEType(overlayEType);
       const isBinOverlay = isBinLikeEType(overlayEType);
@@ -10044,6 +10301,7 @@ function CanvasSvg({
       const defaultFillColor = shouldUseDefaultOverlayPaint ? themeFillDefault : "";
       const defaultStrokeColor = shouldUseDefaultOverlayPaint ? themeStrokeDefault : "";
       const baseInner = getNormalizedOverlayBaseInner(overlay);
+      const renderBaseInner = isBinOverlay ? normalizeBinSvgDefaultStroke(baseInner) : baseInner;
       const cachedBoundActiveFillPaint = String(getOverlayBoundActiveFillColor(overlay) || "").trim();
       const cachedBoundFillPaint = String(getOverlayBoundFillColor(overlay) || "").trim();
       const cachedDiverterMode = isDiverterOverlay ? getEffectiveDiverterState(overlay) : "";
@@ -10089,6 +10347,8 @@ function CanvasSvg({
         String(binLockedOut ? 1 : 0),
         String(binActiveFillingRoute ? 1 : 0),
         String(binActiveDischargingRoute ? 1 : 0),
+        isConveyorScrewOverlayVisual ? String(overlayScaleX(overlay)) : "",
+        isConveyorScrewOverlayVisual ? String(overlayScaleY(overlay)) : "",
         themeFillDefault,
         themeStrokeDefault,
       ].join("\u001f");
@@ -10111,14 +10371,20 @@ function CanvasSvg({
             ? overlayFill
             : defaultFillColor;
         const staticStroke =
-          overlayStroke && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke))
+          overlayStroke &&
+          !(isBinOverlay && isLegacyDarkSvgStrokePaint(overlayStroke)) &&
+          (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke))
             ? overlayStroke
             : defaultStrokeColor;
         const staticStrokeWidth =
           Number.isFinite(Number(overlay?.strokeWidth)) && Number(overlay.strokeWidth) > 0
             ? Number(overlay.strokeWidth)
             : undefined;
-        const inner = applyOverlayPaintOverrides(baseInner, {
+        let inner = renderBaseInner;
+        if (isConveyorScrewOverlayVisual) {
+          inner = applyDynamicConveyorScrewFlights(inner, overlay, overlay?.bbox || overlayLocalBBox(id));
+        }
+        inner = applyOverlayPaintOverrides(inner, {
           fillColor: staticFill,
           strokeColor: staticStroke,
           strokeWidth: staticStrokeWidth,
@@ -10133,7 +10399,7 @@ function CanvasSvg({
             strokeWidth: staticStrokeWidth,
             pointerEvents: "visiblePainted",
           },
-          isConveyorScrew: false,
+          isConveyorScrew: isConveyorScrewOverlayVisual,
         });
         return;
       }
@@ -10161,13 +10427,18 @@ function CanvasSvg({
         const hasCustomOverlayFill =
           Boolean(overlayFill) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultFillPaint(overlayFill));
         const hasCustomOverlayStroke =
-          Boolean(overlayStroke) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke));
-        let inner = baseInner;
+          Boolean(overlayStroke) &&
+          !(isBinOverlay && isLegacyDarkSvgStrokePaint(overlayStroke)) &&
+          (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke));
+        let inner = renderBaseInner;
         if (shouldReplaceBinText) {
           inner = replaceSvgTextPlaceholders(inner, {
             product: dynamicBinProductLabel,
             binNo: dynamicBinNameLabel,
           });
+        }
+        if (isConveyorScrewOverlayVisual) {
+          inner = applyDynamicConveyorScrewFlights(inner, overlay, overlay?.bbox || overlayLocalBBox(id));
         }
         if (
           isBinOverlay &&
@@ -10208,42 +10479,59 @@ function CanvasSvg({
           });
           return;
         }
+        const displayStateStyleClass = isBinOverlay
+          ? ""
+          : (overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass);
+        const displayStateStyleClassHasResolvedPaint = Boolean(
+          displayStateStyleClass &&
+          (
+            resolveIgnitionStyleClassPaintColor(displayStateStyleClass, "fill") ||
+            resolveIgnitionStyleClassPaintColor(displayStateStyleClass, "stroke")
+          )
+        );
         setCachedVisual({
           inner: (() => {
             const defaultOverlayFill = hasCustomOverlayFill ? overlayFill : defaultFillColor;
-            const stateStyleClass = isBinOverlay
-              ? ""
-              : (overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass);
-            const stateStrokeColor = statePaintsStroke && !stateStyleClass
-              ? (overlayStateColor || boundActiveFillColor || "")
+            const stateStyleClass = displayStateStyleClass;
+            const stateStyleClassFillColor = stateStyleClass
+              ? resolveIgnitionStyleClassPaintColor(stateStyleClass, "fill")
               : "";
-            const strokeColor = hasCustomOverlayStroke ? overlayStroke : stateStrokeColor;
+            const stateStyleClassStrokeColor = stateStyleClass
+              ? resolveIgnitionStyleClassPaintColor(stateStyleClass, "stroke")
+              : "";
+            const stateStrokeColor = statePaintsStroke
+              ? (stateStyleClassStrokeColor || stateStyleClassFillColor || (!stateStyleClass ? (overlayStateColor || boundActiveFillColor || "") : ""))
+              : "";
+            const strokeColor = hasCustomOverlayStroke ? overlayStroke : getActiveOutlineStrokeColor(stateStrokeColor);
+            const stateFillColor = stateStyleClass
+              ? stateStyleClassFillColor
+              : (overlayStateColor || boundActiveFillColor || defaultOverlayFill);
             let nextInner = applyOverlayPaintOverrides(inner, {
-              fillColor: isBinOverlay || stateStyleClass ? "" : (overlayStateColor || defaultOverlayFill),
+              fillColor: isBinOverlay ? "" : stateFillColor,
               strokeColor,
               strokeWidth: overlayStrokeWidth,
               allowStrokeOnlyFillTargets,
             });
-            if (stateStyleClass) {
-              nextInner = applyIgnitionStyleClassToSvg(nextInner, stateStyleClass);
+            if (stateStyleClass && !(stateStyleClassFillColor || stateStyleClassStrokeColor)) {
+              nextInner = applyIgnitionStyleClassToSvg(nextInner, stateStyleClass, {
+                paintChildren: true,
+              });
             }
             if (strokeColor) {
               nextInner = forceSvgStrokeColor(nextInner, strokeColor);
             }
             if (routeOutlineStroke) {
-              nextInner = applyOverlayOuterStrokeColor(nextInner, routeOutlineStroke);
+              nextInner = applyOverlayOuterStrokeColor(nextInner, getActiveOutlineStrokeColor(routeOutlineStroke));
             }
             return nextInner;
           })(),
-          className: (
-            isBinOverlay
-              ? ""
-              : (overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass)
-          ) || undefined,
+          className: displayStateStyleClass && !displayStateStyleClassHasResolvedPaint
+            ? displayStateStyleClass
+            : undefined,
           style: {
             fill: isBinOverlay
               ? undefined
-              : (overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass)
+              : displayStateStyleClass && !displayStateStyleClassHasResolvedPaint
               ? (hasCustomOverlayFill ? overlayFill : (defaultFillColor || undefined))
               : (overlayStateColor || (hasCustomOverlayFill ? overlayFill : undefined)),
             stroke: hasCustomOverlayStroke ? overlayStroke : undefined,
@@ -10257,14 +10545,23 @@ function CanvasSvg({
 
       const boundActiveFill = String(getOverlayBoundActiveFillColor(overlay) || "").trim();
       const tagStatePaint = String(getTagColor(overlay.tagPath) || "").trim();
-      const activeFillPaint = boundActiveFill || tagStatePaint || overlayStatePaint;
+      const activeFillPaint = overlayStatePaint || tagStatePaint || boundActiveFill;
       const activeFillStyleClass = isDiverterOverlay || isBinOverlay
         ? ""
         : normalizeIgnitionStyleClassName(activeFillPaint);
+      const activeFillStyleClassFillColor = activeFillStyleClass
+        ? resolveIgnitionStyleClassPaintColor(activeFillStyleClass, "fill")
+        : "";
+      const activeFillStyleClassStrokeColor = activeFillStyleClass
+        ? resolveIgnitionStyleClassPaintColor(activeFillStyleClass, "stroke")
+        : "";
+      const activeFillStyleClassHasResolvedPaint = Boolean(
+        activeFillStyleClassFillColor || activeFillStyleClassStrokeColor
+      );
       const tagFill = isDiverterOverlay || isBinOverlay
         ? ""
         : activeFillStyleClass
-        ? ""
+        ? activeFillStyleClassFillColor
         : normalizeOverlayActiveFillColor(activeFillPaint || overlayStateColor);
       const routeStroke = normalizeActiveLineColor(getRouteStrokeColorForOverlay(overlay));
       const diverterIncomingColor = isDiverterOverlay ? cachedDiverterFlowColor : "";
@@ -10279,10 +10576,7 @@ function CanvasSvg({
           ? cachedDiverterMode
           : "";
       const isFaultSimulated = Boolean(overlay.faultSimulated);
-      const compactEType = overlayEType.replace(/[^a-z0-9]/g, "");
-      const isConveyorScrew =
-        compactEType.includes("conveyorscrew") ||
-        (compactEType.includes("conveyor") && compactEType.includes("screw"));
+      const isConveyorScrew = isConveyorScrewOverlayVisual;
       const faultColor = "#ff3b30";
       const overlayFill = String(overlay?.fill || "").trim();
       const overlayStroke = String(overlay?.stroke || "").trim();
@@ -10294,7 +10588,9 @@ function CanvasSvg({
       const hasCustomOverlayFill =
         Boolean(overlayFill) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultFillPaint(overlayFill));
       const hasCustomOverlayStroke =
-        Boolean(overlayStroke) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke));
+        Boolean(overlayStroke) &&
+        !(isBinOverlay && isLegacyDarkSvgStrokePaint(overlayStroke)) &&
+        (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke));
       const useForcedStroke = String(overlay.strokeMode || "").trim().toLowerCase() === "force";
       const neutralStateFallbackFill = hasFillBinding
         ? themeFillDefault
@@ -10304,14 +10600,15 @@ function CanvasSvg({
         : isBinOverlay
         ? ""
         : activeFillStyleClass
-        ? ""
+        ? activeFillStyleClassFillColor
         : (tagFill || overlayStateColor || neutralStateFallbackFill);
       const effectiveStrokeColor = isDiverterOverlay
         ? ""
         : (routeOutlineStroke || (hasCustomOverlayStroke ? overlayStroke : (useForcedStroke ? routeStroke : "")));
-      const stateStrokeColor = statePaintsStroke && !activeFillStyleClass
-        ? (tagFill || overlayStateColor || "")
+      const stateStrokeColor = statePaintsStroke
+        ? (activeFillStyleClassStrokeColor || activeFillStyleClassFillColor || (!activeFillStyleClass ? (tagFill || overlayStateColor || "") : ""))
         : "";
+      const activeStateStrokeColor = getActiveOutlineStrokeColor(stateStrokeColor);
 
       if (tagFill) {
         const key = String(overlay.tagPath || overlay.id || "");
@@ -10321,13 +10618,16 @@ function CanvasSvg({
         }
       }
 
-      let inner = baseInner;
+      let inner = renderBaseInner;
 
       if (shouldReplaceBinText) {
         inner = replaceSvgTextPlaceholders(inner, {
           product: dynamicBinProductLabel,
           binNo: dynamicBinNameLabel,
         });
+      }
+      if (isConveyorScrew) {
+        inner = applyDynamicConveyorScrewFlights(inner, overlay, overlay?.bbox || overlayLocalBBox(id));
       }
       if (
         isBinOverlay &&
@@ -10363,19 +10663,26 @@ function CanvasSvg({
       if (!isDiverterOverlay) {
         inner = applyOverlayPaintOverrides(inner, {
           fillColor: isFaultSimulated ? "" : effectiveFillColor,
-          strokeColor: hasCustomOverlayStroke ? overlayStroke : (isFaultSimulated ? "" : stateStrokeColor),
+          strokeColor: hasCustomOverlayStroke ? overlayStroke : (isFaultSimulated ? "" : activeStateStrokeColor),
           strokeWidth: overlayStrokeWidth,
           allowStrokeOnlyFillTargets,
         });
       }
-      if (!isDiverterOverlay && activeFillStyleClass && !isFaultSimulated) {
-        inner = applyIgnitionStyleClassToSvg(inner, activeFillStyleClass);
+      if (
+        !isDiverterOverlay &&
+        activeFillStyleClass &&
+        !activeFillStyleClassHasResolvedPaint &&
+        !isFaultSimulated
+      ) {
+        inner = applyIgnitionStyleClassToSvg(inner, activeFillStyleClass, {
+          paintChildren: true,
+        });
       }
       if (!isDiverterOverlay && hasCustomOverlayStroke) {
         inner = forceSvgStrokeColor(inner, overlayStroke);
       }
       if (!isDiverterOverlay && routeOutlineStroke) {
-        inner = applyOverlayOuterStrokeColor(inner, routeOutlineStroke);
+        inner = applyOverlayOuterStrokeColor(inner, getActiveOutlineStrokeColor(routeOutlineStroke));
       }
       if (isDiverterOverlay) {
         inner = applyDiverterFlowColorToSvg(inner, diverterFlowColor, liveDiverterMode, diverterStatePaintOptions);
@@ -10386,7 +10693,7 @@ function CanvasSvg({
         inner,
         className:
           [
-            isDiverterOverlay ? "" : activeFillStyleClass,
+            isDiverterOverlay || activeFillStyleClassHasResolvedPaint ? "" : activeFillStyleClass,
             isFaultSimulated ? "vizi-svg-fault-flash" : "",
           ].filter(Boolean).join(" ") || undefined,
         style: isDiverterOverlay
@@ -10394,7 +10701,9 @@ function CanvasSvg({
               pointerEvents: "visiblePainted",
             }
           : {
-              fill: activeFillStyleClass ? (hasCustomOverlayFill ? overlayFill : (defaultFillColor || undefined)) : undefined,
+              fill: activeFillStyleClass && !activeFillStyleClassHasResolvedPaint
+                ? (hasCustomOverlayFill ? overlayFill : (defaultFillColor || undefined))
+                : undefined,
               pointerEvents: "visiblePainted",
             },
         isConveyorScrew,

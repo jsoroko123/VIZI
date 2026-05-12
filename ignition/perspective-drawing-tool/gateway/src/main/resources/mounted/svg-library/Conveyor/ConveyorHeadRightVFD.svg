@@ -1,16 +1,30 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 34.671265 25.004145" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="72.118" eType="ConveyorHeadRightVFD" stroke="#808080" stroke-width="0.5201" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 34.671265 25.004145" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="72.118" eType="ConveyorHeadRightVFD" fill="#D7DADE" stroke="#66717d" stroke-linejoin="round" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+
   <defs id="defs1">
-    <rect height="24.575689" id="body" width="22.677164" x="230.55119" y="428.96762" fill="#D7DADE" />
+    <linearGradient id="convBodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="45%" stop-color="#d5dce4" />
+      <stop offset="100%" stop-color="#929da9" />
+    </linearGradient>
+    <linearGradient id="convCapFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#eef2f6" />
+      <stop offset="100%" stop-color="#7d8996" />
+    </linearGradient>
+    <linearGradient id="convDarkFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#aeb8c3" />
+      <stop offset="100%" stop-color="#596574" />
+    </linearGradient>
   </defs>
-  <g id="layer1" transform="translate(8.671262,0.00414169)">
-    <rect height="23.929724" id="outerH" width="24.929726" x="0.5330683" y="0.5330683" fill="#D7DADE" stroke-width="0.5201" stroke-dasharray="none" stroke-opacity="1" />
-    <rect height="13.793503" id="innerH" width="14.767916" x="5.6011782" y="5.6011786" stroke="#808080" stroke-width="0.5201" stroke-dasharray="none" stroke-opacity="1" style="opacity:0.99" fill="#D7DADE" />
-    <path d="m 21.970277,10.996635 1.999987,1.52941 -1.999987,1.470554" id="path15-2-6" fill="#D7DADE" stroke="#808080" stroke-width="0.5201" stroke-dasharray="none" />
-    <path d="m 3.9999946,13.999224 -1.9999898,-1.52942 1.9999898,-1.47054" id="path15-2" fill="#D7DADE" stroke="#808080" stroke-width="0.5201" stroke-dasharray="none" />
-    <ellipse cx="-5.7826233" cy="12.497931" id="commodity" rx="2.5068607" ry="2.2360611" fill="#D7DADE" stroke="#808080" stroke-width="0.5201" stroke-dasharray="none" />
-    <text id="text1" transform="matrix(0.81597117,0,0,0.68770985,-184.38984,-290.05513)" x="7.020822" y="0" fill="#000000" style="font-size:18px;opacity:0.99;shape-inside:url(#rect2);text-align:center;white-space:pre">
-      <tspan id="tspan1" x="235.05371" y="447.2134" />
-    </text>
+  <g id="layer1">
+    <rect id="head-shadow" x="9.4579" y="1.7503" width="24.9633" height="23.0038" rx="1.7503" fill="#111827" opacity="0.14" stroke="none" />
+    <rect id="outerH" data-vizi-fill-target="true" x="8.7078" y="1.0002" width="24.9633" height="23.0038" rx="1.7503" fill="url(#convBodyFill)" stroke="#5b6470" stroke-width="0.6251" />
+    <path id="outerH-highlight" d="M 11.7034 5.6009 H 30.6755" fill="none" stroke="#ffffff" stroke-width="0.2813" opacity="0.6" />
+    <rect id="innerH" data-vizi-fill-target="true" x="13.7005" y="6.061" width="13.9795" height="12.8821" rx="1.1252" fill="url(#convCapFill)" stroke="#4b5563" stroke-width="0.5126" opacity="0.99" />
+    <path id="path15-2-6" d="M 29.677 11.0018 L 31.674 12.5021 L 29.677 14.0023" fill="none" stroke="#4b5563" stroke-width="0.5376" />
+    <path id="path15-2" d="M 12.7019 14.0023 L 10.7049 12.5021 L 12.7019 11.0018" fill="none" stroke="#4b5563" stroke-width="0.5376" />
+    <ellipse id="commodity" data-vizi-fill-target="true" cx="3.0005" cy="12.5021" rx="2.5004" ry="2.2254" fill="url(#convCapFill)" stroke="#4b5563" stroke-width="0.5001" />
+    <ellipse id="commodity-highlight" cx="2.3754" cy="11.877" rx="0.6751" ry="0.5501" fill="#ffffff" opacity="0.54" stroke="none" />
+    <text id="text1" x="20.6902" y="14.0023" text-anchor="middle" fill="#111827" stroke="none" font-family="Arial, sans-serif" font-size="7.0012"><tspan id="tspan1" x="20.6902" y="14.0023" /></text>
   </g>
 </svg>

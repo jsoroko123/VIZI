@@ -1,9 +1,20 @@
 ﻿<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 121.25 16.25" preserveAspectRatio="none" kewidth="100" keheight="13.402" eType="ConveyorBeltVFD" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
-  <defs id="defs1" />
-  <g id="Layer_14">
-    <g id="Conveyor_2">
-      <rect height="15" id="body" width="120" x=".62" y=".62" fill="#D7DADE" stroke-width="1.8188" stroke-linejoin="round"  />
-    </g>
+<svg viewBox="0 0 121.25 16.25" preserveAspectRatio="none" kewidth="100" keheight="13.402" eType="ConveyorBeltVFD" fill="#D7DADE" stroke="#66717d" stroke-linejoin="round" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="beltFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f3f5f7" />
+      <stop offset="56%" stop-color="#d7dade" />
+      <stop offset="100%" stop-color="#b7bec6" />
+    </linearGradient>
+    <linearGradient id="rollerFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#eef1f4" />
+      <stop offset="100%" stop-color="#b8c0c8" />
+    </linearGradient>
+  </defs>
+  <g id="layer1">
+    <rect id="body" data-vizi-fill-target="true" x="2.2" y="3.05" width="116.85" height="10.15" rx="2.4" fill="url(#beltFill)" stroke="#66717d" stroke-width="0.82" />
+    <path id="center-seam" d="M 8 8.125 H 113.25" fill="none" stroke="#7b8794" stroke-width="0.34" opacity="0.38" />
+    <ellipse id="left-roller" data-vizi-fill-target="true" cx="7.45" cy="8.125" rx="1.55" ry="2.25" fill="url(#rollerFill)" stroke="#66717d" stroke-width="0.42" />
+    <ellipse id="right-roller" data-vizi-fill-target="true" cx="113.8" cy="8.125" rx="1.55" ry="2.25" fill="url(#rollerFill)" stroke="#66717d" stroke-width="0.42" />
   </g>
 </svg>

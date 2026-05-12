@@ -3906,6 +3906,7 @@ const EQUIPMENT_POPUP_VIEWPORT_MARGIN = 48;
 const EQUIPMENT_POPUP_MIN_WIDTH = 280;
 const EQUIPMENT_POPUP_MIN_HEIGHT = 220;
 const EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY = "vizi.equipmentPopupGeometry.v1";
+const EQUIPMENT_POPUP_GEOMETRY_SCHEMA_VERSION = 3;
 const EQUIPMENT_POPUP_GEOMETRY_SAVE_DELAY_MS = 120;
 const equipmentPopupGeometryTrackers = new WeakMap();
 
@@ -3937,15 +3938,42 @@ function writePopupGeometryStore(store) {
         if (typeof window === "undefined" || !window.localStorage) {
             return;
         }
-        window.localStorage.setItem(EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY, JSON.stringify(store || {}));
+        window.localStorage.setItem(
+            EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY,
+            JSON.stringify({
+                ...(store || {}),
+                schemaVersion: EQUIPMENT_POPUP_GEOMETRY_SCHEMA_VERSION
+            })
+        );
     } catch (_error) {
     }
 }
 
-function readStoredPopupGeometry(geometryKey) {
-    const key = normalizePopupGeometryKey(geometryKey);
+function getPopupGeometryBucket(store, bucketName) {
+    const bucket = isPlainObject(store?.[bucketName]) ? store[bucketName] : null;
+    return bucket || {};
+}
+
+function readStoredPopupGeometryByScope(sizeKey, positionKey = sizeKey) {
+    const normalizedSizeKey = normalizePopupGeometryKey(sizeKey);
+    const normalizedPositionKey = normalizePopupGeometryKey(positionKey || sizeKey);
     const store = readPopupGeometryStore();
-    return isPlainObject(store?.[key]) ? store[key] : null;
+    const useScopedSizeCache = Number(store?.schemaVersion || 0) >= EQUIPMENT_POPUP_GEOMETRY_SCHEMA_VERSION;
+    const sizes = getPopupGeometryBucket(store, "sizes");
+    const positions = getPopupGeometryBucket(store, "positions");
+    const sizeGeometry = useScopedSizeCache && isPlainObject(sizes?.[normalizedSizeKey])
+        ? sizes[normalizedSizeKey]
+        : null;
+    const positionGeometry = isPlainObject(positions?.[normalizedPositionKey])
+        ? positions[normalizedPositionKey]
+        : null;
+
+    return {
+        width: Number(sizeGeometry?.width) || undefined,
+        height: Number(sizeGeometry?.height) || undefined,
+        left: Number(positionGeometry?.left) || undefined,
+        top: Number(positionGeometry?.top) || undefined
+    };
 }
 
 function resolvePopupViewportSize() {
@@ -3999,17 +4027,23 @@ function clampPopupGeometry(rawGeometry = {}) {
     };
 }
 
-function resolveOverlayPopupPosition(geometryKey = "") {
-    return clampPopupGeometry(readStoredPopupGeometry(geometryKey) || {});
+function resolveOverlayPopupPosition(sizeKey = "", positionKey = sizeKey) {
+    return clampPopupGeometry(readStoredPopupGeometryByScope(sizeKey, positionKey) || {});
 }
 
-function writeStoredPopupGeometry(geometryKey, geometry) {
-    const key = normalizePopupGeometryKey(geometryKey);
+function writeStoredPopupGeometry(sizeKey, geometry, positionKey = sizeKey) {
+    const normalizedSizeKey = normalizePopupGeometryKey(sizeKey);
+    const normalizedPositionKey = normalizePopupGeometryKey(positionKey || sizeKey);
     const nextGeometry = clampPopupGeometry(geometry);
     const store = readPopupGeometryStore();
-    store[key] = {
+    store.sizes = getPopupGeometryBucket(store, "sizes");
+    store.positions = getPopupGeometryBucket(store, "positions");
+    store.schemaVersion = EQUIPMENT_POPUP_GEOMETRY_SCHEMA_VERSION;
+    store.sizes[normalizedSizeKey] = {
         width: nextGeometry.width,
-        height: nextGeometry.height,
+        height: nextGeometry.height
+    };
+    store.positions[normalizedPositionKey] = {
         left: nextGeometry.left,
         top: nextGeometry.top
     };
@@ -4020,41 +4054,106 @@ function isPopupGeometryRoot(element) {
     if (!(element instanceof HTMLElement)) {
         return false;
     }
-    if (element.classList?.contains("popup-body")) {
+    const classText = String(element.getAttribute?.("class") || "");
+    if (/(?:^|\s)(?:popup-body|body-wrapper|view-parent|view|view-root|ia_containerComponent)(?:\s|$)/i.test(classText)) {
         return false;
     }
-    return element.matches?.('[role="dialog"], [id*="popup"], [data-popup-id*="svg-popup-"]') === true;
+    const hasPopupRootAncestor = Boolean(
+        element.parentElement?.closest?.('[role="dialog"], [id^="popup-"], [data-popup-id*="svg-popup-"]')
+    );
+    if (hasPopupRootAncestor && element.getAttribute("role") !== "dialog") {
+        return false;
+    }
+    return element.matches?.('[role="dialog"], [id^="popup-"], [data-popup-id*="svg-popup-"]') === true;
 }
 
-function attachPopupGeometryCache(root, geometryKey) {
-    if (!(root instanceof HTMLElement) || !geometryKey || !isPopupGeometryRoot(root)) {
+function resolvePopupGeometryRoot(roots, popupId = "") {
+    const popupIdText = String(popupId || "").trim().toLowerCase();
+    const candidates = Array.from(roots || []).filter((root) => isPopupGeometryRoot(root));
+    if (!candidates.length) {
+        return null;
+    }
+    const matchingCandidates = popupIdText
+        ? candidates.filter((root) => {
+            const identity = [
+                root.getAttribute?.("id"),
+                root.getAttribute?.("data-popup-id"),
+                root.getAttribute?.("data-id")
+            ].map((value) => String(value || "").toLowerCase()).join(" ");
+            return identity.includes(popupIdText);
+        })
+        : [];
+    const scopedCandidates = matchingCandidates.length ? matchingCandidates : candidates;
+    const outerCandidates = scopedCandidates.filter((candidate) => (
+        !scopedCandidates.some((other) => other !== candidate && other.contains?.(candidate))
+    ));
+    return (outerCandidates.length ? outerCandidates : scopedCandidates)
+        .map((root) => {
+            const rect = root.getBoundingClientRect?.();
+            const area = Math.max(0, Number(rect?.width) || 0) * Math.max(0, Number(rect?.height) || 0);
+            const roleScore = root.getAttribute?.("role") === "dialog" ? 1000000000 : 0;
+            return { root, score: roleScore + area };
+        })
+        .sort((left, right) => right.score - left.score)[0]?.root || null;
+}
+
+function isValidPopupGeometryRect(rect) {
+    return (
+        Number(rect?.width) >= EQUIPMENT_POPUP_MIN_WIDTH &&
+        Number(rect?.height) >= EQUIPMENT_POPUP_MIN_HEIGHT
+    );
+}
+
+function applyPopupRootGeometry(root, geometry = {}) {
+    if (!(root instanceof HTMLElement)) {
         return;
     }
-    const key = normalizePopupGeometryKey(geometryKey);
+    const width = Math.round(Number(geometry?.width) || 0);
+    const height = Math.round(Number(geometry?.height) || 0);
+    if (width >= EQUIPMENT_POPUP_MIN_WIDTH) {
+        root.style.width = `${width}px`;
+    }
+    if (height >= EQUIPMENT_POPUP_MIN_HEIGHT) {
+        root.style.height = `${height}px`;
+    }
+}
+
+function attachPopupGeometryCache(root, sizeKey, positionKey = sizeKey) {
+    if (!(root instanceof HTMLElement) || !sizeKey || !isPopupGeometryRoot(root)) {
+        return;
+    }
+    const normalizedSizeKey = normalizePopupGeometryKey(sizeKey);
+    const normalizedPositionKey = normalizePopupGeometryKey(positionKey || sizeKey);
+    const trackerKey = `${normalizedSizeKey}:${normalizedPositionKey}`;
     const previous = equipmentPopupGeometryTrackers.get(root);
-    if (previous?.key === key) {
+    if (previous?.key === trackerKey) {
         return;
     }
     previous?.cleanup?.();
 
     let saveTimer = 0;
+    let hasGeometryInteraction = false;
     const save = () => {
+        if (!hasGeometryInteraction) {
+            return;
+        }
         window.clearTimeout(saveTimer);
         saveTimer = window.setTimeout(() => {
             const rect = root.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-                writeStoredPopupGeometry(key, {
+            if (isValidPopupGeometryRect(rect)) {
+                writeStoredPopupGeometry(normalizedSizeKey, {
                     width: rect.width,
                     height: rect.height,
                     left: rect.left,
                     top: rect.top
-                });
+                }, normalizedPositionKey);
             }
         }, EQUIPMENT_POPUP_GEOMETRY_SAVE_DELAY_MS);
     };
     const endEvents = ["mouseup", "pointerup", "touchend", "transitionend"];
     endEvents.forEach((eventName) => root.addEventListener(eventName, save, true));
     const armWindowSave = () => {
+        hasGeometryInteraction = true;
         const onEnd = () => {
             save();
             window.removeEventListener("mouseup", onEnd, true);
@@ -4077,8 +4176,7 @@ function attachPopupGeometryCache(root, geometryKey) {
         ["mousedown", "pointerdown", "touchstart"].forEach((eventName) => root.removeEventListener(eventName, armWindowSave, true));
         resizeObserver?.disconnect?.();
     };
-    equipmentPopupGeometryTrackers.set(root, { key, cleanup });
-    save();
+    equipmentPopupGeometryTrackers.set(root, { key: trackerKey, cleanup });
 }
 
 const VIZI_POPUP_RUNTIME_STYLE = `
@@ -4205,7 +4303,15 @@ function cssEscapeValue(value) {
     return text.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
 }
 
-function applyViziPopupDomFixes({ geometryKey = "", popupId = "", title = "", theme = "light" } = {}) {
+function applyViziPopupDomFixes({
+    geometryKey = "",
+    sizeKey = geometryKey,
+    positionKey = geometryKey,
+    popupId = "",
+    title = "",
+    theme = "light",
+    popupGeometry = null
+} = {}) {
     if (typeof document === "undefined") {
         return;
     }
@@ -4257,7 +4363,6 @@ function applyViziPopupDomFixes({ geometryKey = "", popupId = "", title = "", th
         root.style?.setProperty("--vizi-popup-bg", bgColor);
         if (root instanceof HTMLElement) {
             root.style.boxSizing = "border-box";
-            attachPopupGeometryCache(root, geometryKey);
         }
         const clampTargets = Array.from(root.querySelectorAll?.([
                 ".body-wrapper",
@@ -4287,6 +4392,19 @@ function applyViziPopupDomFixes({ geometryKey = "", popupId = "", title = "", th
                 element.style.overflowY = "auto";
             }
         });
+    });
+
+    const geometryRoot = resolvePopupGeometryRoot(roots, popupId);
+    if (geometryRoot instanceof HTMLElement) {
+        geometryRoot.style.boxSizing = "border-box";
+        applyPopupRootGeometry(geometryRoot, popupGeometry);
+        attachPopupGeometryCache(geometryRoot, sizeKey || geometryKey, positionKey || geometryKey);
+    }
+
+    roots.forEach((root) => {
+        if (!(root instanceof HTMLElement || root instanceof SVGElement)) {
+            return;
+        }
         const textTargets = Array.from(root.querySelectorAll?.([
             ".ia_labelComponent",
             ".ia_labelComponent *",
@@ -10796,29 +10914,47 @@ export default function PerspectiveViziCanvasBridge(props) {
         const overlayId = String(overlay?.id || "").trim();
         const popupViewName = resolveOverlayPopupViewName(overlay);
         const popupTypeName = resolveCanonicalOverlayPopupLeafName(popupViewName) || resolveOverlayPopupLeafName(popupViewName);
-        const popupGeometryKey = normalizePopupGeometryKey(popupTypeName || popupViewName || viewPath);
-        const popupPosition = resolveOverlayPopupPosition(popupGeometryKey);
-        const popupTitle = String(overlay?.name || popupViewName || "Popup")
+        const overlayEType = resolveOverlayPopupLeafName(overlay?.eType) || popupTypeName;
+        const tagPath = String(
+            overlay?.tagPath ||
+            getOverlayFillBindingTagPath(overlay) ||
+            overlay?.tagName ||
+            overlay?.tag_path ||
+            overlay?.tag ||
+            overlay?.equipmentPath ||
+            overlay?.equipment_path ||
+            ""
+        ).trim();
+        const tagLeaf = getIgnitionTagLeafName(tagPath);
+        const popupSizeKey = normalizePopupGeometryKey(popupTypeName || popupViewName || viewPath);
+        const popupPositionKey = normalizePopupGeometryKey(tagPath || tagLeaf || overlay?.name || overlayId || popupSizeKey);
+        const popupPosition = resolveOverlayPopupPosition(popupSizeKey, popupPositionKey);
+        const popupTitleBase = String(overlay?.name || popupViewName || "Popup")
             .trim()
             .replace(/\.svg$/i, "");
+        const popupTitleTagName = String(tagLeaf || tagPath || "").trim();
+        const popupTitle = popupTitleTagName;
         const popupId = overlayId
             ? `svg-popup-${overlayId}`
             : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
-        const tagPath = String(overlay?.tagPath || "").trim();
-        const tagLeaf = getIgnitionTagLeafName(tagPath);
         const popupTextColor = popupTheme === "dark" ? "#e5eefb" : "#101820";
         const popupMutedTextColor = popupTheme === "dark"
             ? "rgba(226, 232, 240, 0.72)"
             : "rgba(15, 23, 42, 0.68)";
         const baseViewParams = {
             overlayId,
-            eType: popupTypeName,
-            type: popupTypeName,
+            eType: overlayEType,
+            etype: overlayEType,
+            type: overlayEType,
+            equipmentType: overlayEType,
+            equipment_type: overlayEType,
+            popupEType: popupTypeName,
+            popup_etype: popupTypeName,
             popupType: popupTypeName,
             viewName: popupTypeName,
             viewPath,
             view_path: viewPath,
-            name: popupTitle,
+            name: popupTitleTagName,
             tagName: tagPath,
             tagPath,
             tag_path: tagPath,
@@ -10856,15 +10992,26 @@ export default function PerspectiveViziCanvasBridge(props) {
                 ...extraViewParams,
                 ...baseViewParams
             },
-            title: popupTitle,
+            title: popupTitle || " ",
             showCloseIcon: true,
             draggable: true,
             resizable: true,
+            viewportBound: true,
             modal: false,
             overlayDismiss: false,
-            style: {
+            width: popupPosition.width,
+            height: popupPosition.height,
+            size: {
                 width: popupPosition.width,
-                height: popupPosition.height,
+                height: popupPosition.height
+            },
+            dimensions: {
+                width: popupPosition.width,
+                height: popupPosition.height
+            },
+            style: {
+                width: `${popupPosition.width}px`,
+                height: `${popupPosition.height}px`,
                 overflow: "hidden",
                 overflowX: "hidden",
                 overflowY: "hidden",
@@ -10891,7 +11038,15 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
 
         mounts.activatePopup(popupConfig);
-        scheduleViziPopupDomFixes({ geometryKey: popupGeometryKey, popupId, title: popupTitle, theme: popupTheme });
+        scheduleViziPopupDomFixes({
+            geometryKey: popupSizeKey,
+            sizeKey: popupSizeKey,
+            positionKey: popupPositionKey,
+            popupId,
+            title: popupTitle,
+            theme: popupTheme,
+            popupGeometry: popupPosition
+        });
         if (typeof mounts.focusPopup === "function") {
             mounts.focusPopup(popupId);
         }

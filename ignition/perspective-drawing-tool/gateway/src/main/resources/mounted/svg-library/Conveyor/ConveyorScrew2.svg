@@ -1,9 +1,28 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 121.25 16.25" preserveAspectRatio="none" kewidth="100" keheight="13.402" eType="ConveyorScrew2" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
-  <g id="Layer_14">
-    <g id="Conveyor_2">
-      <rect height="15" width="120" x=".62" y=".62" id="body" fill="#D7DADE" stroke-width="1.8188" stroke-linejoin="round"  />
-      <polyline points="55.64 3.86 60.62 12.39 65.64 3.86 70.62 12.39 75.64 3.86 80.62 12.39 85.64 3.86 90.62 12.39 95.64 3.86 100.62 12.39 105.62 3.86 110.61 12.39 115.13 3.86" id="polyline" fill="transparent" stroke-width="1.8188" stroke-linejoin="round"  />
-    </g>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 121.25 16.25" preserveAspectRatio="none" kewidth="100" keheight="13.402" eType="Motor" fill="#D7DADE" stroke="#66717d" stroke-linejoin="round" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+
+  <defs id="defs1">
+    <linearGradient id="convBodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="45%" stop-color="#d5dce4" />
+      <stop offset="100%" stop-color="#929da9" />
+    </linearGradient>
+    <linearGradient id="convCapFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#eef2f6" />
+      <stop offset="100%" stop-color="#7d8996" />
+    </linearGradient>
+    <linearGradient id="convDarkFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#aeb8c3" />
+      <stop offset="100%" stop-color="#596574" />
+    </linearGradient>
+  </defs>
+  <g id="layer1">
+    <rect id="shadow" x="3.1043" y="4.147" width="116.4" height="11.7" rx="2.106" fill="#111827" opacity="0.13" stroke="none" />
+    <rect id="body" data-vizi-fill-target="true" x="2.425" y="2.275" width="116.4" height="11.7" rx="2.106" fill="url(#convBodyFill)" stroke="#5b6470" stroke-width="0.6175" />
+    <path id="tube-highlight" d="M 7.081 5.083 H 114.169" fill="none" stroke="#ffffff" stroke-width="0.3396" opacity="0.55" />
+    <path id="shaft" d="M 7.081 8.125 H 114.169" fill="none" stroke="#525d69" stroke-width="0.494" opacity="0.78" />
+    <polyline id="auger-flight" points="2.425,4.966 15.3583,11.284 28.2917,4.966 41.225,11.284 54.1583,4.966 67.0917,11.284 80.025,4.966 92.9583,11.284 105.8917,4.966 118.825,11.284" fill="none" stroke="#6f7a86" stroke-width="0.5249" opacity="0.84" />
+    <rect id="left-bearing" data-vizi-fill-target="true" x="2.425" y="4.381" width="3.276" height="7.488" rx="0.4322" fill="url(#convCapFill)" stroke="#4b5563" stroke-width="0.3396" />
+    <rect id="right-bearing" data-vizi-fill-target="true" x="115.549" y="4.381" width="3.276" height="7.488" rx="0.4322" fill="url(#convCapFill)" stroke="#4b5563" stroke-width="0.3396" />
   </g>
 </svg>

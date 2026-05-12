@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 6.812548 6.288001" preserveAspectRatio="xMinYMin" kewidth="100" keheight="92.3" eType="FanPnuematic" stroke="#808080" stroke-width="0.1022" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 6.812548 6.288001" preserveAspectRatio="xMinYMin" kewidth="100" keheight="92.3" eType="Motor" stroke="#808080" stroke-width="0.1022" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
   <defs id="defs190486" />
   <g id="layer1" transform="translate(-71.958401,-38.790416)">
     <rect height="4.75" id="housing" width="4.75" x="73.507492" y="39.23103" fill="#D7DADE" stroke-width="0.1022" stroke-dasharray="none" />
@@ -16,3 +16,4 @@
     <path d="m 72.058401,38.890416 v 6.08645 h 1.437153 v -6.08645 z m 1.449039,5.084961 v 1.00304 h 5.163509 v -1.00304 z" id="frame" stroke-width="0.1022" stroke-dasharray="none" fill="#D7DADE" />
   </g>
 </svg>
+

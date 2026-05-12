@@ -13746,6 +13746,10 @@ var MesoraDrawingToolBundle = (() => {
     const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
     return key === "bin" || key.startsWith("bin") || key.includes("silo");
   };
+  var isConveyorScrewIdentity = (value) => {
+    const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    return key.includes("conveyorscrew") || key.includes("screwconveyor") || key.includes("conveyor") && key.includes("screw");
+  };
   var normalizeWidgetKindKey = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
   var isPassiveReadoutWidgetKind = (value) => {
     const key = normalizeWidgetKindKey(value);
@@ -13985,6 +13989,23 @@ var MesoraDrawingToolBundle = (() => {
       const paint = normalizePaintForDefaultCompare(value);
       return paint === normalizePaintForDefaultCompare(themeStrokeDefault) || paint === "rgb(128,128,128)" || paint === "rgba(128,128,128,1)" || paint === "gray" || paint === "grey";
     };
+    const isLegacyDarkSvgStrokePaint = (value) => {
+      const paint = normalizePaintForDefaultCompare(value);
+      return paint === "#000" || paint === "#000000" || paint === "black" || paint === "rgb(0,0,0)" || paint === "rgba(0,0,0,1)" || paint === "#111" || paint === "#111111" || paint === "#1f1f1f" || paint === "#222" || paint === "#222222" || paint === "#2e2e2e" || paint === "#333" || paint === "#333333";
+    };
+    const normalizeBinSvgDefaultStroke = (inner) => {
+      const source = String(inner || "");
+      if (!source) return source;
+      let next = source.replace(/\bstroke\s*=\s*(["'])([^"']*)\1/gi, (match, quote, strokeValue) => isLegacyDarkSvgStrokePaint(strokeValue) ? `stroke=${quote}${themeStrokeDefault}${quote}` : match);
+      next = next.replace(/\bstyle\s*=\s*(["'])([^"']*)\1/gi, (match, quote, styleBody) => {
+        const body = String(styleBody || "").replace(
+          /stroke\s*:\s*([^;]+)(;?)/gi,
+          (strokeMatch, strokeValue, suffix) => isLegacyDarkSvgStrokePaint(strokeValue) ? `stroke:${themeStrokeDefault}${suffix || ";"}` : strokeMatch
+        );
+        return `style=${quote}${body}${quote}`;
+      });
+      return next;
+    };
     const [hoverOverlayId, setHoverOverlayId] = useState(null);
     const [viewportScroll, setViewportScroll] = useState({ x: 0, y: 0 });
     const [smoothedCollabCursors, setSmoothedCollabCursors] = useState([]);
@@ -14100,6 +14121,7 @@ var MesoraDrawingToolBundle = (() => {
     const normalizeEmbeddedIgnitionStyleClassesCacheRef = useRef(/* @__PURE__ */ new Map());
     const normalizedOverlayBaseInnerByIdRef = useRef(/* @__PURE__ */ new Map());
     const overlayVisualResultByIdRef = useRef(/* @__PURE__ */ new Map());
+    const ignitionStyleClassPaintCacheRef = useRef(/* @__PURE__ */ new Map());
     const emptyPolylineCrossingGapsByShapeIdRef = useRef(/* @__PURE__ */ new Map());
     const replaceSvgTextPlaceholders = (innerSvg, labels = {}) => {
       const source = String(innerSvg || "");
@@ -14468,7 +14490,7 @@ var MesoraDrawingToolBundle = (() => {
     const renderRouteStrokeColorCache = /* @__PURE__ */ new Map();
     const renderOverlayLiveValueCache = /* @__PURE__ */ new Map();
     const renderPolylineDisplayedColorCache = /* @__PURE__ */ new Map();
-    const getOverlayFillBinding2 = (overlay) => {
+    const getOverlayFillBinding3 = (overlay) => {
       var _a2;
       const direct = (_a2 = overlay == null ? void 0 : overlay.bindings) == null ? void 0 : _a2.fill;
       if (direct && typeof direct === "object" && !Array.isArray(direct)) {
@@ -14480,22 +14502,22 @@ var MesoraDrawingToolBundle = (() => {
       }
       return null;
     };
-    const getOverlayFillBindingTagPath2 = (overlay) => {
+    const getOverlayFillBindingTagPath3 = (overlay) => {
       var _a2, _b, _c, _d;
-      const binding = getOverlayFillBinding2(overlay);
+      const binding = getOverlayFillBinding3(overlay);
       return String(
         (_d = (_c = (_b = (_a2 = binding == null ? void 0 : binding.tagPath) != null ? _a2 : binding == null ? void 0 : binding.path) != null ? _b : binding == null ? void 0 : binding.sourcePath) != null ? _c : overlay == null ? void 0 : overlay.tagPath) != null ? _d : ""
       ).trim();
     };
     const getOverlayFillBindingMappings = (overlay) => {
       var _a2;
-      const binding = getOverlayFillBinding2(overlay);
+      const binding = getOverlayFillBinding3(overlay);
       if (!binding) return [];
       return Array.isArray((_a2 = binding == null ? void 0 : binding.transform) == null ? void 0 : _a2.mappings) ? binding.transform.mappings : Array.isArray(binding == null ? void 0 : binding.mappings) ? binding.mappings : [];
     };
     const getOverlayFillBindingFallbackColor = (overlay) => {
       var _a2, _b, _c, _d;
-      const binding = getOverlayFillBinding2(overlay);
+      const binding = getOverlayFillBinding3(overlay);
       return String(
         (_d = (_c = (_b = (_a2 = binding == null ? void 0 : binding.transform) == null ? void 0 : _a2.fallbackColor) != null ? _b : binding == null ? void 0 : binding.fallbackColor) != null ? _c : overlay == null ? void 0 : overlay.fill) != null ? _d : ""
       ).trim();
@@ -14523,7 +14545,7 @@ var MesoraDrawingToolBundle = (() => {
       return void 0;
     };
     const readOverlayFillBindingValue = (overlay) => {
-      const key = getOverlayFillBindingTagPath2(overlay);
+      const key = getOverlayFillBindingTagPath3(overlay);
       const direct = readIgnitionTagValueForPath(key);
       if (direct != null && String(direct).trim() !== "") {
         return direct;
@@ -14549,7 +14571,7 @@ var MesoraDrawingToolBundle = (() => {
     };
     const getOverlayBoundFillColor = (overlay) => {
       if (isDiverterEType(overlay == null ? void 0 : overlay.eType)) return "";
-      const binding = getOverlayFillBinding2(overlay);
+      const binding = getOverlayFillBinding3(overlay);
       if (!binding) return "";
       const rawValue = readOverlayFillBindingValue(overlay);
       const bindingMappings = getOverlayFillBindingMappings(overlay);
@@ -14563,7 +14585,7 @@ var MesoraDrawingToolBundle = (() => {
     };
     const getOverlayBoundActiveFillColor = (overlay) => {
       if (isDiverterEType(overlay == null ? void 0 : overlay.eType)) return "";
-      const binding = getOverlayFillBinding2(overlay);
+      const binding = getOverlayFillBinding3(overlay);
       if (!binding) return "";
       const rawValue = readOverlayFillBindingValue(overlay);
       if (rawValue == null || String(rawValue).trim() === "") {
@@ -14662,7 +14684,7 @@ var MesoraDrawingToolBundle = (() => {
         return renderRouteColorCache.get(cacheKey);
       }
       const routeColorFromIgnition = String(
-        (_b = (_a2 = readIgnitionMemberValueForPath(overlay == null ? void 0 : overlay.tagPath, LIVE_ROUTE_COLOR_MEMBER_ALIASES)) != null ? _a2 : readIgnitionMemberValueForPath(getOverlayFillBindingTagPath2(overlay), LIVE_ROUTE_COLOR_MEMBER_ALIASES)) != null ? _b : ""
+        (_b = (_a2 = readIgnitionMemberValueForPath(overlay == null ? void 0 : overlay.tagPath, LIVE_ROUTE_COLOR_MEMBER_ALIASES)) != null ? _a2 : readIgnitionMemberValueForPath(getOverlayFillBindingTagPath3(overlay), LIVE_ROUTE_COLOR_MEMBER_ALIASES)) != null ? _b : ""
       ).trim();
       if (routeColorFromIgnition) {
         if (cacheKey) renderRouteColorCache.set(cacheKey, routeColorFromIgnition);
@@ -18448,14 +18470,22 @@ var MesoraDrawingToolBundle = (() => {
         }));
         return false;
       }
+      const overlayEType = String((overlay == null ? void 0 : overlay.eType) || "").trim();
+      const viewParams = overlayEType ? {
+        ...params,
+        eType: overlayEType,
+        etype: overlayEType,
+        equipmentType: overlayEType,
+        equipment_type: overlayEType
+      } : params;
       const popupId = `widget-view-${overlayId}`;
       const title = String(((_a2 = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a2.title) || (overlay == null ? void 0 : overlay.name) || viewPath.split(/[\\/]/).pop() || "View").trim();
-      const position = getWidgetOpenViewPopupPosition(overlay, params);
+      const position = getWidgetOpenViewPopupPosition(overlay, viewParams);
       const popupConfig = {
         id: popupId,
         viewPath,
-        viewParams: params,
-        params,
+        viewParams,
+        params: viewParams,
         title,
         modal: false,
         overlayDismiss: false,
@@ -18623,6 +18653,11 @@ var MesoraDrawingToolBundle = (() => {
       if (!base || !target) return String(baseColor || "");
       const ratio = Math.max(0, Math.min(1, Number(amount) || 0));
       return rgbToCssColor(base.map((channel, index2) => channel + (target[index2] - channel) * ratio));
+    };
+    const getActiveOutlineStrokeColor = (value) => {
+      const color2 = String(value || "").trim();
+      if (!parseCssRgbChannels(color2)) return color2;
+      return mixCssColor(color2, "#000000", 0.36) || color2;
     };
     const applyBinVisualStateToSvg = (innerSvg, options = {}) => {
       var _a2;
@@ -18816,7 +18851,7 @@ var MesoraDrawingToolBundle = (() => {
           setStylePaint(node, "fill", `url(#${gradientId})`);
           node.setAttribute("fill-opacity", "1");
           if (!node.getAttribute("stroke")) {
-            node.setAttribute("stroke", "#2e2e2e");
+            node.setAttribute("stroke", "#808080");
           }
           return true;
         };
@@ -19041,7 +19076,7 @@ var MesoraDrawingToolBundle = (() => {
         readIgnitionMemberValueForPath(overlay == null ? void 0 : overlay.tagPath, LIVE_STATE_MEMBER_ALIASES)
       );
       if (directIgnitionState) return directIgnitionState;
-      const bindingPath = getOverlayFillBindingTagPath2(overlay);
+      const bindingPath = getOverlayFillBindingTagPath3(overlay);
       if (bindingPath && bindingPath.toLowerCase() !== String((overlay == null ? void 0 : overlay.tagPath) || "").trim().toLowerCase()) {
         const bindingIgnitionState = parseDiverterStateValue(
           readIgnitionMemberValueForPath(bindingPath, LIVE_STATE_MEMBER_ALIASES)
@@ -19432,18 +19467,18 @@ var MesoraDrawingToolBundle = (() => {
         return String((match == null ? void 0 : match[1]) || "").trim();
       };
       const gradientTintColor = (baseColor, sourceColor, index2, count) => {
+        const t = count > 1 ? index2 / Math.max(1, count - 1) : 0.5;
+        const positionalShade = t <= 0.45 ? 0 : Math.min(0.085, (t - 0.45) * 0.15);
         const sourceChannels = parseCssRgbChannels(sourceColor);
         if (sourceChannels) {
           const [r, g, b] = sourceChannels;
           const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-          if (luminance >= 0.56) {
-            return mixCssColor(baseColor, "#ffffff", Math.min(0.62, 0.1 + (luminance - 0.56) * 1.35));
-          }
-          return mixCssColor(baseColor, "#000000", Math.min(0.42, 0.06 + (0.56 - luminance) * 0.9));
+          const sourceShade = luminance >= 0.72 ? 0 : Math.min(0.08, 0.012 + (0.72 - luminance) * 0.12);
+          const shade = Math.max(positionalShade, sourceShade);
+          return shade > 0 ? mixCssColor(baseColor, "#000000", shade) || baseColor : baseColor;
         }
-        const t = count > 1 ? index2 / Math.max(1, count - 1) : 0.5;
-        if (t < 0.45) return mixCssColor(baseColor, "#ffffff", 0.36 - t * 0.28);
-        if (t > 0.55) return mixCssColor(baseColor, "#000000", 0.08 + (t - 0.55) * 0.44);
+        if (t < 0.5) return baseColor;
+        if (t > 0.55) return mixCssColor(baseColor, "#000000", 0.02 + (t - 0.55) * 0.12);
         return baseColor;
       };
       const makeStableSvgIdSuffix = (text) => {
@@ -19545,9 +19580,9 @@ var MesoraDrawingToolBundle = (() => {
             const stops = Array.isArray(sourceStops) && sourceStops.length ? sourceStops : [];
             if (!stops.length) {
               [
-                ["0%", mixCssColor(nextFill, "#ffffff", 0.38), "1"],
-                ["48%", nextFill, "1"],
-                ["100%", mixCssColor(nextFill, "#000000", 0.24), "1"]
+                ["0%", nextFill, "1"],
+                ["55%", nextFill, "1"],
+                ["100%", mixCssColor(nextFill, "#000000", 0.08), "1"]
               ].forEach(([offset, color2, opacity]) => {
                 const stop = doc.createElementNS(ns, "stop");
                 stop.setAttribute("offset", offset);
@@ -20281,6 +20316,92 @@ var MesoraDrawingToolBundle = (() => {
       const next = Array.from(new Set(`${existing} ${className}`.trim().split(/\s+/).filter(Boolean))).join(" ");
       if (next) node.setAttribute("class", next);
     };
+    const normalizeComputedSvgPaintColor = (value, sentinels = []) => {
+      const raw = String(value || "").trim();
+      const compact = raw.replace(/\s+/g, "").toLowerCase();
+      if (!raw || compact === "none" || compact === "transparent" || compact === "rgba(0,0,0,0)" || compact === "currentcolor" || sentinels.includes(compact)) {
+        return "";
+      }
+      return parseCssRgbChannels(raw) ? raw : "";
+    };
+    const inferIgnitionStyleClassPaintColor = (className) => {
+      const key = String(className || "").toLowerCase().replace(/\bpsc-/g, " ").replace(/[^a-z0-9]+/g, " ").trim();
+      if (!key) return "";
+      if (/\b(fault|faulted|failed|failure|alarm|error|trip)\b/.test(key)) return "#ef4444";
+      if (/\b(stopping|stoping)\b/.test(key)) return "#f97316";
+      if (/\b(starting|startup|start)\b/.test(key)) return "#f59e0b";
+      if (/\b(running|run|active|started|dosing|measuring|open|enabled|on)\b/.test(key)) return "#22c55e";
+      if (/\b(stopped|idle|empty|emptied|off|disabled|inactive|nostate|no state)\b/.test(key)) return "#6b7280";
+      return "";
+    };
+    const resolveIgnitionStyleClassPaintColor = (className, preferredProperty = "fill") => {
+      const classText = String(className || "").trim();
+      const property = String(preferredProperty || "fill").trim().toLowerCase() === "stroke" ? "stroke" : "fill";
+      if (!classText || typeof document === "undefined" || typeof window === "undefined" || typeof window.getComputedStyle !== "function") {
+        return "";
+      }
+      const cache = ignitionStyleClassPaintCacheRef.current;
+      const cacheKey = `${property}|${classText}`;
+      const now = Date.now();
+      const cached = cache.get(cacheKey);
+      if (cached && now - cached.at < (cached.value ? 6e4 : 1e3)) {
+        return cached.value;
+      }
+      const ns = "http://www.w3.org/2000/svg";
+      const fillSentinel = "rgb(1, 2, 3)";
+      const strokeSentinel = "rgb(4, 5, 6)";
+      const colorSentinel = "rgb(7, 8, 9)";
+      const sentinels = [fillSentinel, strokeSentinel, colorSentinel].map(
+        (entry) => entry.replace(/\s+/g, "").toLowerCase()
+      );
+      let resolved = "";
+      let host = null;
+      try {
+        host = document.createElement("div");
+        host.style.cssText = [
+          "position:absolute",
+          "left:-10000px",
+          "top:-10000px",
+          "width:0",
+          "height:0",
+          "overflow:hidden",
+          "visibility:hidden",
+          `color:${colorSentinel}`
+        ].join(";");
+        const svg = document.createElementNS(ns, "svg");
+        svg.setAttribute("width", "1");
+        svg.setAttribute("height", "1");
+        svg.setAttribute("viewBox", "0 0 1 1");
+        const rect = document.createElementNS(ns, "rect");
+        rect.setAttribute("class", classText);
+        rect.setAttribute("x", "0");
+        rect.setAttribute("y", "0");
+        rect.setAttribute("width", "1");
+        rect.setAttribute("height", "1");
+        rect.setAttribute("fill", fillSentinel);
+        rect.setAttribute("stroke", strokeSentinel);
+        svg.appendChild(rect);
+        host.appendChild(svg);
+        document.body.appendChild(host);
+        const computed = window.getComputedStyle(rect);
+        const fillColor = normalizeComputedSvgPaintColor(computed.getPropertyValue("fill") || computed.fill, sentinels);
+        const strokeColor = normalizeComputedSvgPaintColor(computed.getPropertyValue("stroke") || computed.stroke, sentinels);
+        const textColor = normalizeComputedSvgPaintColor(computed.getPropertyValue("color") || computed.color, sentinels);
+        const backgroundColor = normalizeComputedSvgPaintColor(
+          computed.getPropertyValue("background-color") || computed.backgroundColor,
+          sentinels
+        );
+        resolved = property === "stroke" ? strokeColor || fillColor || textColor || backgroundColor : fillColor || textColor || backgroundColor || strokeColor;
+      } catch {
+        resolved = "";
+      } finally {
+        if (host == null ? void 0 : host.parentNode) host.parentNode.removeChild(host);
+      }
+      if (cache.size > 240) cache.clear();
+      if (!resolved) resolved = inferIgnitionStyleClassPaintColor(classText);
+      cache.set(cacheKey, { value: resolved, at: now });
+      return resolved;
+    };
     const normalizeEmbeddedIgnitionStyleClasses = (inner) => {
       const source = String(inner || "");
       if (!source || !/classes\s*:/i.test(source) || typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") {
@@ -20364,7 +20485,7 @@ var MesoraDrawingToolBundle = (() => {
         return value === "none" || value === "transparent";
       }).join("; ");
     };
-    const applyIgnitionStyleClassToSvg = (inner, className) => {
+    const applyIgnitionStyleClassToSvg = (inner, className, options = {}) => {
       const classText = String(className || "").trim();
       const source = String(inner || "");
       if (!source || !classText || typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") return source;
@@ -20373,6 +20494,11 @@ var MesoraDrawingToolBundle = (() => {
         const root = doc.documentElement;
         if (!root || root.nodeName.toLowerCase() !== "svg") return source;
         appendSvgClassName(root, classText);
+        const paintChildren = (options == null ? void 0 : options.paintChildren) !== false;
+        if (!paintChildren) {
+          const serializer2 = new XMLSerializer();
+          return Array.from(root.childNodes).map((node) => serializer2.serializeToString(node)).join("");
+        }
         const nodes = root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline,line,text,use,g");
         nodes.forEach((node) => {
           const fillAttr = String(node.getAttribute("fill") || "").trim().toLowerCase();
@@ -20442,6 +20568,81 @@ var MesoraDrawingToolBundle = (() => {
       if (Number.isFinite(sy) && sy > 0) return sy;
       const s = Number(o == null ? void 0 : o.scale);
       return Number.isFinite(s) && s > 0 ? s : 1;
+    };
+    const clampDynamicScrewFlightCount = (value) => Math.max(4, Math.min(96, Math.round(Number(value) || 0)));
+    const parseSvgNumericAttr = (tag, attrName) => {
+      const match = String(tag || "").match(new RegExp(`\\b${attrName}\\s*=\\s*(["'])([^"']+)\\1`, "i"));
+      const value = Number(match == null ? void 0 : match[2]);
+      return Number.isFinite(value) ? value : null;
+    };
+    const readSvgElementStartById = (inner, tagName, id) => {
+      var _a2;
+      const safeTag = String(tagName || "").replace(/[^a-zA-Z0-9:_-]/g, "");
+      const safeId = String(id || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (!safeTag || !safeId) return "";
+      return ((_a2 = String(inner || "").match(new RegExp(`<${safeTag}\\b(?=[^>]*\\bid\\s*=\\s*(["'])${safeId}\\1)[^>]*>`, "i"))) == null ? void 0 : _a2[0]) || "";
+    };
+    const makeDynamicScrewFlightPoints = (inner, overlay, localBounds) => {
+      var _a2, _b, _c, _d;
+      const bodyTag = readSvgElementStartById(inner, "rect", "body");
+      const bb = localBounds || {};
+      const boundsX = Number(bb.x);
+      const boundsY = Number(bb.y);
+      const boundsW = Number(bb.width);
+      const boundsH = Number(bb.height);
+      const fallbackW = Number.isFinite(boundsW) && boundsW > 0 ? boundsW : 20;
+      const fallbackH = Number.isFinite(boundsH) && boundsH > 0 ? boundsH : 2;
+      const bodyX = (_a2 = parseSvgNumericAttr(bodyTag, "x")) != null ? _a2 : (Number.isFinite(boundsX) ? boundsX : 0) + fallbackW * 0.02;
+      const bodyY = (_b = parseSvgNumericAttr(bodyTag, "y")) != null ? _b : (Number.isFinite(boundsY) ? boundsY : 0) + fallbackH * 0.14;
+      const bodyW = (_c = parseSvgNumericAttr(bodyTag, "width")) != null ? _c : fallbackW * 0.96;
+      const bodyH = (_d = parseSvgNumericAttr(bodyTag, "height")) != null ? _d : fallbackH * 0.72;
+      if (!(Number.isFinite(bodyW) && bodyW > 0 && Number.isFinite(bodyH) && bodyH > 0)) {
+        return "";
+      }
+      const sx = Math.max(1e-4, overlayScaleX2(overlay));
+      const sy = Math.max(1e-4, overlayScaleY2(overlay));
+      const stretchRatio = Math.max(0.2, Math.min(12, sx / sy));
+      const baseFlights = Math.max(6, Math.min(24, Math.round(bodyW / Math.max(bodyH * 1.18, 0.8))));
+      const flights = clampDynamicScrewFlightCount(baseFlights * stretchRatio);
+      const centerY = bodyY + bodyH / 2;
+      const topY = centerY - bodyH * 0.27;
+      const bottomY = centerY + bodyH * 0.27;
+      const points = [];
+      for (let i = 0; i <= flights; i += 1) {
+        const x = bodyX + bodyW * i / flights;
+        const y = i % 2 === 0 ? topY : bottomY;
+        points.push(`${Number(x).toFixed(4).replace(/0+$/, "").replace(/\.$/, "")},${Number(y).toFixed(4).replace(/0+$/, "").replace(/\.$/, "")}`);
+      }
+      return points.join(" ");
+    };
+    const applyDynamicConveyorScrewFlights = (inner, overlay, localBounds) => {
+      const points = makeDynamicScrewFlightPoints(inner, overlay, localBounds);
+      if (!points) return String(inner || "");
+      const flightMarkup = `<polyline id="auger-flight" points="${points}" fill="none" stroke="#6f7a86" stroke-width="0.0689" opacity="0.84" />`;
+      let out = String(inner || "");
+      if (/<polyline\b(?=[^>]*\bid\s*=\s*(["'])auger-flight\1)/i.test(out)) {
+        return out.replace(
+          /(<polyline\b(?=[^>]*\bid\s*=\s*(["'])auger-flight\2)[^>]*\bpoints\s*=\s*)(["'])([^"']*)(\3)/i,
+          `$1$3${points}$5`
+        );
+      }
+      if (/<path\b(?=[^>]*\bid\s*=\s*(["'])path14\1)[^>]*\/?>/i.test(out)) {
+        return out.replace(/<path\b(?=[^>]*\bid\s*=\s*(["'])path14\1)[^>]*\/?>/i, flightMarkup);
+      }
+      if (/<path\b(?=[^>]*\bid\s*=\s*(["'])path4\1)[^>]*\/?>/i.test(out)) {
+        return out.replace(/<path\b(?=[^>]*\bid\s*=\s*(["'])path4\1)[^>]*\/?>/i, flightMarkup);
+      }
+      if (/<path\b(?=[^>]*\bid\s*=\s*(["'])shaft\1)[^>]*\/?>/i.test(out)) {
+        return out.replace(/(<path\b(?=[^>]*\bid\s*=\s*(["'])shaft\2)[^>]*\/?>)/i, `$1
+    ${flightMarkup}`);
+      }
+      if (/<\/g>\s*$/i.test(out)) {
+        return out.replace(/<\/g>\s*$/i, `  ${flightMarkup}
+  </g>`);
+      }
+      return out.replace(/<\/g>\s*<\/svg>\s*$/i, `  ${flightMarkup}
+  </g>
+</svg>`);
     };
     const isStaticSvgOverlay2 = (o) => Boolean((o == null ? void 0 : o.static) || (o == null ? void 0 : o.isStatic) || (o == null ? void 0 : o.staticSvg));
     const overlayFlipX = (o) => Boolean((o == null ? void 0 : o.flipX) || (o == null ? void 0 : o.flippedX) || (o == null ? void 0 : o.mirrorX));
@@ -22375,6 +22576,15 @@ var MesoraDrawingToolBundle = (() => {
           return;
         }
         const overlayEType = String((overlay == null ? void 0 : overlay.eType) || "").trim().toLowerCase();
+        const screwIdentityText = [
+          overlayEType,
+          overlay == null ? void 0 : overlay.sourceKey,
+          overlay == null ? void 0 : overlay.name,
+          overlay == null ? void 0 : overlay.label,
+          overlay == null ? void 0 : overlay.type,
+          /\bid\s*=\s*(["'])auger-flight\1/i.test(String((overlay == null ? void 0 : overlay.inner) || "")) ? "ConveyorScrew" : ""
+        ].join(" ");
+        const isConveyorScrewOverlayVisual = isConveyorScrewIdentity(screwIdentityText);
         const isStaticOverlay = isStaticSvgOverlay2(overlay);
         const isDiverterOverlay2 = isDiverterEType(overlayEType);
         const isBinOverlay2 = isBinLikeEType(overlayEType);
@@ -22422,6 +22632,7 @@ var MesoraDrawingToolBundle = (() => {
         const defaultFillColor = shouldUseDefaultOverlayPaint ? themeFillDefault : "";
         const defaultStrokeColor = shouldUseDefaultOverlayPaint ? themeStrokeDefault : "";
         const baseInner = getNormalizedOverlayBaseInner(overlay);
+        const renderBaseInner = isBinOverlay2 ? normalizeBinSvgDefaultStroke(baseInner) : baseInner;
         const cachedBoundActiveFillPaint = String(getOverlayBoundActiveFillColor(overlay) || "").trim();
         const cachedBoundFillPaint = String(getOverlayBoundFillColor(overlay) || "").trim();
         const cachedDiverterMode = isDiverterOverlay2 ? getEffectiveDiverterState(overlay) : "";
@@ -22464,6 +22675,8 @@ var MesoraDrawingToolBundle = (() => {
           String(binLockedOut ? 1 : 0),
           String(binActiveFillingRoute ? 1 : 0),
           String(binActiveDischargingRoute ? 1 : 0),
+          isConveyorScrewOverlayVisual ? String(overlayScaleX2(overlay)) : "",
+          isConveyorScrewOverlayVisual ? String(overlayScaleY2(overlay)) : "",
           themeFillDefault,
           themeStrokeDefault
         ].join("");
@@ -22482,9 +22695,13 @@ var MesoraDrawingToolBundle = (() => {
           const overlayFill2 = String((overlay == null ? void 0 : overlay.fill) || "").trim();
           const overlayStroke2 = String((overlay == null ? void 0 : overlay.stroke) || "").trim();
           const staticFill = overlayFill2 && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultFillPaint(overlayFill2)) ? overlayFill2 : defaultFillColor;
-          const staticStroke = overlayStroke2 && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke2)) ? overlayStroke2 : defaultStrokeColor;
+          const staticStroke = overlayStroke2 && !(isBinOverlay2 && isLegacyDarkSvgStrokePaint(overlayStroke2)) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke2)) ? overlayStroke2 : defaultStrokeColor;
           const staticStrokeWidth = Number.isFinite(Number(overlay == null ? void 0 : overlay.strokeWidth)) && Number(overlay.strokeWidth) > 0 ? Number(overlay.strokeWidth) : void 0;
-          const inner2 = applyOverlayPaintOverrides(baseInner, {
+          let inner2 = renderBaseInner;
+          if (isConveyorScrewOverlayVisual) {
+            inner2 = applyDynamicConveyorScrewFlights(inner2, overlay, (overlay == null ? void 0 : overlay.bbox) || overlayLocalBBox(id));
+          }
+          inner2 = applyOverlayPaintOverrides(inner2, {
             fillColor: staticFill,
             strokeColor: staticStroke,
             strokeWidth: staticStrokeWidth,
@@ -22499,7 +22716,7 @@ var MesoraDrawingToolBundle = (() => {
               strokeWidth: staticStrokeWidth,
               pointerEvents: "visiblePainted"
             },
-            isConveyorScrew: false
+            isConveyorScrew: isConveyorScrewOverlayVisual
           });
           return;
         }
@@ -22514,13 +22731,16 @@ var MesoraDrawingToolBundle = (() => {
           const overlayStroke2 = String((overlay == null ? void 0 : overlay.stroke) || "").trim();
           const overlayStrokeWidth2 = Number.isFinite(Number(overlay == null ? void 0 : overlay.strokeWidth)) && Number(overlay.strokeWidth) > 0 ? Number(overlay.strokeWidth) : void 0;
           const hasCustomOverlayFill2 = Boolean(overlayFill2) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultFillPaint(overlayFill2));
-          const hasCustomOverlayStroke2 = Boolean(overlayStroke2) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke2));
-          let inner2 = baseInner;
+          const hasCustomOverlayStroke2 = Boolean(overlayStroke2) && !(isBinOverlay2 && isLegacyDarkSvgStrokePaint(overlayStroke2)) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke2));
+          let inner2 = renderBaseInner;
           if (shouldReplaceBinText) {
             inner2 = replaceSvgTextPlaceholders(inner2, {
               product: dynamicBinProductLabel,
               binNo: dynamicBinNameLabel
             });
+          }
+          if (isConveyorScrewOverlayVisual) {
+            inner2 = applyDynamicConveyorScrewFlights(inner2, overlay, (overlay == null ? void 0 : overlay.bbox) || overlayLocalBBox(id));
           }
           if (isBinOverlay2 && (/id=["']BarGraph["']/i.test(String(inner2 || "")) || /id=["']main-tall-bin["']/i.test(String(inner2 || "")) || /id=["']bin_shell["']/i.test(String(inner2 || "")) || /id=["']Lock_Filling["']/i.test(String(inner2 || "")) || /id=["']Lock_Discharge["']/i.test(String(inner2 || "")) || /id=["']LockFill["']/i.test(String(inner2 || "")) || /id=["']LockDischarge["']/i.test(String(inner2 || "")))) {
             inner2 = applyBinVisualStateToSvg(inner2, {
@@ -22550,32 +22770,41 @@ var MesoraDrawingToolBundle = (() => {
             });
             return;
           }
+          const displayStateStyleClass = isBinOverlay2 ? "" : overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass;
+          const displayStateStyleClassHasResolvedPaint = Boolean(
+            displayStateStyleClass && (resolveIgnitionStyleClassPaintColor(displayStateStyleClass, "fill") || resolveIgnitionStyleClassPaintColor(displayStateStyleClass, "stroke"))
+          );
           setCachedVisual({
             inner: (() => {
               const defaultOverlayFill = hasCustomOverlayFill2 ? overlayFill2 : defaultFillColor;
-              const stateStyleClass = isBinOverlay2 ? "" : overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass;
-              const stateStrokeColor2 = statePaintsStroke && !stateStyleClass ? overlayStateColor || boundActiveFillColor || "" : "";
-              const strokeColor = hasCustomOverlayStroke2 ? overlayStroke2 : stateStrokeColor2;
+              const stateStyleClass = displayStateStyleClass;
+              const stateStyleClassFillColor = stateStyleClass ? resolveIgnitionStyleClassPaintColor(stateStyleClass, "fill") : "";
+              const stateStyleClassStrokeColor = stateStyleClass ? resolveIgnitionStyleClassPaintColor(stateStyleClass, "stroke") : "";
+              const stateStrokeColor2 = statePaintsStroke ? stateStyleClassStrokeColor || stateStyleClassFillColor || (!stateStyleClass ? overlayStateColor || boundActiveFillColor || "" : "") : "";
+              const strokeColor = hasCustomOverlayStroke2 ? overlayStroke2 : getActiveOutlineStrokeColor(stateStrokeColor2);
+              const stateFillColor = stateStyleClass ? stateStyleClassFillColor : overlayStateColor || boundActiveFillColor || defaultOverlayFill;
               let nextInner = applyOverlayPaintOverrides(inner2, {
-                fillColor: isBinOverlay2 || stateStyleClass ? "" : overlayStateColor || defaultOverlayFill,
+                fillColor: isBinOverlay2 ? "" : stateFillColor,
                 strokeColor,
                 strokeWidth: overlayStrokeWidth2,
                 allowStrokeOnlyFillTargets
               });
-              if (stateStyleClass) {
-                nextInner = applyIgnitionStyleClassToSvg(nextInner, stateStyleClass);
+              if (stateStyleClass && !(stateStyleClassFillColor || stateStyleClassStrokeColor)) {
+                nextInner = applyIgnitionStyleClassToSvg(nextInner, stateStyleClass, {
+                  paintChildren: true
+                });
               }
               if (strokeColor) {
                 nextInner = forceSvgStrokeColor(nextInner, strokeColor);
               }
               if (routeOutlineStroke) {
-                nextInner = applyOverlayOuterStrokeColor(nextInner, routeOutlineStroke);
+                nextInner = applyOverlayOuterStrokeColor(nextInner, getActiveOutlineStrokeColor(routeOutlineStroke));
               }
               return nextInner;
             })(),
-            className: (isBinOverlay2 ? "" : overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass) || void 0,
+            className: displayStateStyleClass && !displayStateStyleClassHasResolvedPaint ? displayStateStyleClass : void 0,
             style: {
-              fill: isBinOverlay2 ? void 0 : overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass ? hasCustomOverlayFill2 ? overlayFill2 : defaultFillColor || void 0 : overlayStateColor || (hasCustomOverlayFill2 ? overlayFill2 : void 0),
+              fill: isBinOverlay2 ? void 0 : displayStateStyleClass && !displayStateStyleClassHasResolvedPaint ? hasCustomOverlayFill2 ? overlayFill2 : defaultFillColor || void 0 : overlayStateColor || (hasCustomOverlayFill2 ? overlayFill2 : void 0),
               stroke: hasCustomOverlayStroke2 ? overlayStroke2 : void 0,
               strokeWidth: overlayStrokeWidth2,
               pointerEvents: "visiblePainted"
@@ -22586,29 +22815,34 @@ var MesoraDrawingToolBundle = (() => {
         }
         const boundActiveFill = String(getOverlayBoundActiveFillColor(overlay) || "").trim();
         const tagStatePaint = String(getTagColor(overlay.tagPath) || "").trim();
-        const activeFillPaint = boundActiveFill || tagStatePaint || overlayStatePaint;
+        const activeFillPaint = overlayStatePaint || tagStatePaint || boundActiveFill;
         const activeFillStyleClass = isDiverterOverlay2 || isBinOverlay2 ? "" : normalizeIgnitionStyleClassName(activeFillPaint);
-        const tagFill = isDiverterOverlay2 || isBinOverlay2 ? "" : activeFillStyleClass ? "" : normalizeOverlayActiveFillColor(activeFillPaint || overlayStateColor);
+        const activeFillStyleClassFillColor = activeFillStyleClass ? resolveIgnitionStyleClassPaintColor(activeFillStyleClass, "fill") : "";
+        const activeFillStyleClassStrokeColor = activeFillStyleClass ? resolveIgnitionStyleClassPaintColor(activeFillStyleClass, "stroke") : "";
+        const activeFillStyleClassHasResolvedPaint = Boolean(
+          activeFillStyleClassFillColor || activeFillStyleClassStrokeColor
+        );
+        const tagFill = isDiverterOverlay2 || isBinOverlay2 ? "" : activeFillStyleClass ? activeFillStyleClassFillColor : normalizeOverlayActiveFillColor(activeFillPaint || overlayStateColor);
         const routeStroke = normalizeActiveLineColor(getRouteStrokeColorForOverlay(overlay));
         const diverterIncomingColor = isDiverterOverlay2 ? cachedDiverterFlowColor : "";
         const connectedPolylineColor = isDiverterOverlay2 ? diverterIncomingColor : "";
         const diverterFlowColor = isDiverterOverlay2 ? String(connectedPolylineColor || "").trim() : "";
         const liveDiverterMode = isDiverterOverlay2 ? cachedDiverterMode : "";
         const isFaultSimulated = Boolean(overlay.faultSimulated);
-        const compactEType = overlayEType.replace(/[^a-z0-9]/g, "");
-        const isConveyorScrew = compactEType.includes("conveyorscrew") || compactEType.includes("conveyor") && compactEType.includes("screw");
+        const isConveyorScrew = isConveyorScrewOverlayVisual;
         const faultColor = "#ff3b30";
         const overlayFill = String((overlay == null ? void 0 : overlay.fill) || "").trim();
         const overlayStroke = String((overlay == null ? void 0 : overlay.stroke) || "").trim();
-        const hasFillBinding = Boolean(getOverlayFillBinding2(overlay));
+        const hasFillBinding = Boolean(getOverlayFillBinding3(overlay));
         const overlayStrokeWidth = Number.isFinite(Number(overlay == null ? void 0 : overlay.strokeWidth)) && Number(overlay.strokeWidth) > 0 ? Number(overlay.strokeWidth) : void 0;
         const hasCustomOverlayFill = Boolean(overlayFill) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultFillPaint(overlayFill));
-        const hasCustomOverlayStroke = Boolean(overlayStroke) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke));
+        const hasCustomOverlayStroke = Boolean(overlayStroke) && !(isBinOverlay2 && isLegacyDarkSvgStrokePaint(overlayStroke)) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke));
         const useForcedStroke = String(overlay.strokeMode || "").trim().toLowerCase() === "force";
         const neutralStateFallbackFill = hasFillBinding ? themeFillDefault : hasCustomOverlayFill ? overlayFill : defaultFillColor;
-        const effectiveFillColor = isDiverterOverlay2 ? "" : isBinOverlay2 ? "" : activeFillStyleClass ? "" : tagFill || overlayStateColor || neutralStateFallbackFill;
+        const effectiveFillColor = isDiverterOverlay2 ? "" : isBinOverlay2 ? "" : activeFillStyleClass ? activeFillStyleClassFillColor : tagFill || overlayStateColor || neutralStateFallbackFill;
         const effectiveStrokeColor = isDiverterOverlay2 ? "" : routeOutlineStroke || (hasCustomOverlayStroke ? overlayStroke : useForcedStroke ? routeStroke : "");
-        const stateStrokeColor = statePaintsStroke && !activeFillStyleClass ? tagFill || overlayStateColor || "" : "";
+        const stateStrokeColor = statePaintsStroke ? activeFillStyleClassStrokeColor || activeFillStyleClassFillColor || (!activeFillStyleClass ? tagFill || overlayStateColor || "" : "") : "";
+        const activeStateStrokeColor = getActiveOutlineStrokeColor(stateStrokeColor);
         if (tagFill) {
           const key = String(overlay.tagPath || overlay.id || "");
           const prev = lastTagColorRef.current.get(key);
@@ -22616,12 +22850,15 @@ var MesoraDrawingToolBundle = (() => {
             lastTagColorRef.current.set(key, tagFill);
           }
         }
-        let inner = baseInner;
+        let inner = renderBaseInner;
         if (shouldReplaceBinText) {
           inner = replaceSvgTextPlaceholders(inner, {
             product: dynamicBinProductLabel,
             binNo: dynamicBinNameLabel
           });
+        }
+        if (isConveyorScrew) {
+          inner = applyDynamicConveyorScrewFlights(inner, overlay, (overlay == null ? void 0 : overlay.bbox) || overlayLocalBBox(id));
         }
         if (isBinOverlay2 && (/id=["']BarGraph["']/i.test(String(inner || "")) || /id=["']main-tall-bin["']/i.test(String(inner || "")) || /id=["']bin_shell["']/i.test(String(inner || "")) || /id=["']Lock_Filling["']/i.test(String(inner || "")) || /id=["']Lock_Discharge["']/i.test(String(inner || "")) || /id=["']LockFill["']/i.test(String(inner || "")) || /id=["']LockDischarge["']/i.test(String(inner || "")))) {
           inner = applyBinVisualStateToSvg(inner, {
@@ -22644,19 +22881,21 @@ var MesoraDrawingToolBundle = (() => {
         if (!isDiverterOverlay2) {
           inner = applyOverlayPaintOverrides(inner, {
             fillColor: isFaultSimulated ? "" : effectiveFillColor,
-            strokeColor: hasCustomOverlayStroke ? overlayStroke : isFaultSimulated ? "" : stateStrokeColor,
+            strokeColor: hasCustomOverlayStroke ? overlayStroke : isFaultSimulated ? "" : activeStateStrokeColor,
             strokeWidth: overlayStrokeWidth,
             allowStrokeOnlyFillTargets
           });
         }
-        if (!isDiverterOverlay2 && activeFillStyleClass && !isFaultSimulated) {
-          inner = applyIgnitionStyleClassToSvg(inner, activeFillStyleClass);
+        if (!isDiverterOverlay2 && activeFillStyleClass && !activeFillStyleClassHasResolvedPaint && !isFaultSimulated) {
+          inner = applyIgnitionStyleClassToSvg(inner, activeFillStyleClass, {
+            paintChildren: true
+          });
         }
         if (!isDiverterOverlay2 && hasCustomOverlayStroke) {
           inner = forceSvgStrokeColor(inner, overlayStroke);
         }
         if (!isDiverterOverlay2 && routeOutlineStroke) {
-          inner = applyOverlayOuterStrokeColor(inner, routeOutlineStroke);
+          inner = applyOverlayOuterStrokeColor(inner, getActiveOutlineStrokeColor(routeOutlineStroke));
         }
         if (isDiverterOverlay2) {
           inner = applyDiverterFlowColorToSvg(inner, diverterFlowColor, liveDiverterMode, diverterStatePaintOptions);
@@ -22665,13 +22904,13 @@ var MesoraDrawingToolBundle = (() => {
         setCachedVisual({
           inner,
           className: [
-            isDiverterOverlay2 ? "" : activeFillStyleClass,
+            isDiverterOverlay2 || activeFillStyleClassHasResolvedPaint ? "" : activeFillStyleClass,
             isFaultSimulated ? "vizi-svg-fault-flash" : ""
           ].filter(Boolean).join(" ") || void 0,
           style: isDiverterOverlay2 ? {
             pointerEvents: "visiblePainted"
           } : {
-            fill: activeFillStyleClass ? hasCustomOverlayFill ? overlayFill : defaultFillColor || void 0 : void 0,
+            fill: activeFillStyleClass && !activeFillStyleClassHasResolvedPaint ? hasCustomOverlayFill ? overlayFill : defaultFillColor || void 0 : void 0,
             pointerEvents: "visiblePainted"
           },
           isConveyorScrew
@@ -28797,6 +29036,7 @@ var MesoraDrawingToolBundle = (() => {
   var EQUIPMENT_POPUP_MIN_WIDTH = 280;
   var EQUIPMENT_POPUP_MIN_HEIGHT = 220;
   var EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY = "vizi.equipmentPopupGeometry.v1";
+  var EQUIPMENT_POPUP_GEOMETRY_SCHEMA_VERSION = 3;
   var EQUIPMENT_POPUP_GEOMETRY_SAVE_DELAY_MS = 120;
   var equipmentPopupGeometryTrackers = /* @__PURE__ */ new WeakMap();
   function normalizePopupGeometryKey(value) {
@@ -28818,14 +29058,35 @@ var MesoraDrawingToolBundle = (() => {
       if (typeof window === "undefined" || !window.localStorage) {
         return;
       }
-      window.localStorage.setItem(EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY, JSON.stringify(store || {}));
+      window.localStorage.setItem(
+        EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY,
+        JSON.stringify({
+          ...store || {},
+          schemaVersion: EQUIPMENT_POPUP_GEOMETRY_SCHEMA_VERSION
+        })
+      );
     } catch (_error) {
     }
   }
-  function readStoredPopupGeometry(geometryKey) {
-    const key = normalizePopupGeometryKey(geometryKey);
+  function getPopupGeometryBucket(store, bucketName) {
+    const bucket = isPlainObject(store == null ? void 0 : store[bucketName]) ? store[bucketName] : null;
+    return bucket || {};
+  }
+  function readStoredPopupGeometryByScope(sizeKey, positionKey = sizeKey) {
+    const normalizedSizeKey = normalizePopupGeometryKey(sizeKey);
+    const normalizedPositionKey = normalizePopupGeometryKey(positionKey || sizeKey);
     const store = readPopupGeometryStore();
-    return isPlainObject(store == null ? void 0 : store[key]) ? store[key] : null;
+    const useScopedSizeCache = Number((store == null ? void 0 : store.schemaVersion) || 0) >= EQUIPMENT_POPUP_GEOMETRY_SCHEMA_VERSION;
+    const sizes = getPopupGeometryBucket(store, "sizes");
+    const positions2 = getPopupGeometryBucket(store, "positions");
+    const sizeGeometry = useScopedSizeCache && isPlainObject(sizes == null ? void 0 : sizes[normalizedSizeKey]) ? sizes[normalizedSizeKey] : null;
+    const positionGeometry = isPlainObject(positions2 == null ? void 0 : positions2[normalizedPositionKey]) ? positions2[normalizedPositionKey] : null;
+    return {
+      width: Number(sizeGeometry == null ? void 0 : sizeGeometry.width) || void 0,
+      height: Number(sizeGeometry == null ? void 0 : sizeGeometry.height) || void 0,
+      left: Number(positionGeometry == null ? void 0 : positionGeometry.left) || void 0,
+      top: Number(positionGeometry == null ? void 0 : positionGeometry.top) || void 0
+    };
   }
   function resolvePopupViewportSize() {
     const viewport = typeof window !== "undefined" ? window : {};
@@ -28869,60 +29130,125 @@ var MesoraDrawingToolBundle = (() => {
       top
     };
   }
-  function resolveOverlayPopupPosition(geometryKey = "") {
-    return clampPopupGeometry(readStoredPopupGeometry(geometryKey) || {});
+  function resolveOverlayPopupPosition(sizeKey = "", positionKey = sizeKey) {
+    return clampPopupGeometry(readStoredPopupGeometryByScope(sizeKey, positionKey) || {});
   }
-  function writeStoredPopupGeometry(geometryKey, geometry) {
-    const key = normalizePopupGeometryKey(geometryKey);
+  function writeStoredPopupGeometry(sizeKey, geometry, positionKey = sizeKey) {
+    const normalizedSizeKey = normalizePopupGeometryKey(sizeKey);
+    const normalizedPositionKey = normalizePopupGeometryKey(positionKey || sizeKey);
     const nextGeometry = clampPopupGeometry(geometry);
     const store = readPopupGeometryStore();
-    store[key] = {
+    store.sizes = getPopupGeometryBucket(store, "sizes");
+    store.positions = getPopupGeometryBucket(store, "positions");
+    store.schemaVersion = EQUIPMENT_POPUP_GEOMETRY_SCHEMA_VERSION;
+    store.sizes[normalizedSizeKey] = {
       width: nextGeometry.width,
-      height: nextGeometry.height,
+      height: nextGeometry.height
+    };
+    store.positions[normalizedPositionKey] = {
       left: nextGeometry.left,
       top: nextGeometry.top
     };
     writePopupGeometryStore(store);
   }
   function isPopupGeometryRoot(element) {
-    var _a, _b;
+    var _a, _b, _c, _d;
     if (!(element instanceof HTMLElement)) {
       return false;
     }
-    if ((_a = element.classList) == null ? void 0 : _a.contains("popup-body")) {
+    const classText = String(((_a = element.getAttribute) == null ? void 0 : _a.call(element, "class")) || "");
+    if (/(?:^|\s)(?:popup-body|body-wrapper|view-parent|view|view-root|ia_containerComponent)(?:\s|$)/i.test(classText)) {
       return false;
     }
-    return ((_b = element.matches) == null ? void 0 : _b.call(element, '[role="dialog"], [id*="popup"], [data-popup-id*="svg-popup-"]')) === true;
+    const hasPopupRootAncestor = Boolean(
+      (_c = (_b = element.parentElement) == null ? void 0 : _b.closest) == null ? void 0 : _c.call(_b, '[role="dialog"], [id^="popup-"], [data-popup-id*="svg-popup-"]')
+    );
+    if (hasPopupRootAncestor && element.getAttribute("role") !== "dialog") {
+      return false;
+    }
+    return ((_d = element.matches) == null ? void 0 : _d.call(element, '[role="dialog"], [id^="popup-"], [data-popup-id*="svg-popup-"]')) === true;
   }
-  function attachPopupGeometryCache(root, geometryKey) {
+  function resolvePopupGeometryRoot(roots, popupId = "") {
     var _a;
-    if (!(root instanceof HTMLElement) || !geometryKey || !isPopupGeometryRoot(root)) {
+    const popupIdText = String(popupId || "").trim().toLowerCase();
+    const candidates = Array.from(roots || []).filter((root) => isPopupGeometryRoot(root));
+    if (!candidates.length) {
+      return null;
+    }
+    const matchingCandidates = popupIdText ? candidates.filter((root) => {
+      var _a2, _b, _c;
+      const identity = [
+        (_a2 = root.getAttribute) == null ? void 0 : _a2.call(root, "id"),
+        (_b = root.getAttribute) == null ? void 0 : _b.call(root, "data-popup-id"),
+        (_c = root.getAttribute) == null ? void 0 : _c.call(root, "data-id")
+      ].map((value) => String(value || "").toLowerCase()).join(" ");
+      return identity.includes(popupIdText);
+    }) : [];
+    const scopedCandidates = matchingCandidates.length ? matchingCandidates : candidates;
+    const outerCandidates = scopedCandidates.filter((candidate) => !scopedCandidates.some((other) => {
+      var _a2;
+      return other !== candidate && ((_a2 = other.contains) == null ? void 0 : _a2.call(other, candidate));
+    }));
+    return ((_a = (outerCandidates.length ? outerCandidates : scopedCandidates).map((root) => {
+      var _a2, _b;
+      const rect = (_a2 = root.getBoundingClientRect) == null ? void 0 : _a2.call(root);
+      const area = Math.max(0, Number(rect == null ? void 0 : rect.width) || 0) * Math.max(0, Number(rect == null ? void 0 : rect.height) || 0);
+      const roleScore = ((_b = root.getAttribute) == null ? void 0 : _b.call(root, "role")) === "dialog" ? 1e9 : 0;
+      return { root, score: roleScore + area };
+    }).sort((left, right) => right.score - left.score)[0]) == null ? void 0 : _a.root) || null;
+  }
+  function isValidPopupGeometryRect(rect) {
+    return Number(rect == null ? void 0 : rect.width) >= EQUIPMENT_POPUP_MIN_WIDTH && Number(rect == null ? void 0 : rect.height) >= EQUIPMENT_POPUP_MIN_HEIGHT;
+  }
+  function applyPopupRootGeometry(root, geometry = {}) {
+    if (!(root instanceof HTMLElement)) {
       return;
     }
-    const key = normalizePopupGeometryKey(geometryKey);
+    const width = Math.round(Number(geometry == null ? void 0 : geometry.width) || 0);
+    const height = Math.round(Number(geometry == null ? void 0 : geometry.height) || 0);
+    if (width >= EQUIPMENT_POPUP_MIN_WIDTH) {
+      root.style.width = `${width}px`;
+    }
+    if (height >= EQUIPMENT_POPUP_MIN_HEIGHT) {
+      root.style.height = `${height}px`;
+    }
+  }
+  function attachPopupGeometryCache(root, sizeKey, positionKey = sizeKey) {
+    var _a;
+    if (!(root instanceof HTMLElement) || !sizeKey || !isPopupGeometryRoot(root)) {
+      return;
+    }
+    const normalizedSizeKey = normalizePopupGeometryKey(sizeKey);
+    const normalizedPositionKey = normalizePopupGeometryKey(positionKey || sizeKey);
+    const trackerKey = `${normalizedSizeKey}:${normalizedPositionKey}`;
     const previous = equipmentPopupGeometryTrackers.get(root);
-    if ((previous == null ? void 0 : previous.key) === key) {
+    if ((previous == null ? void 0 : previous.key) === trackerKey) {
       return;
     }
     (_a = previous == null ? void 0 : previous.cleanup) == null ? void 0 : _a.call(previous);
     let saveTimer = 0;
+    let hasGeometryInteraction = false;
     const save = () => {
+      if (!hasGeometryInteraction) {
+        return;
+      }
       window.clearTimeout(saveTimer);
       saveTimer = window.setTimeout(() => {
         const rect = root.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          writeStoredPopupGeometry(key, {
+        if (isValidPopupGeometryRect(rect)) {
+          writeStoredPopupGeometry(normalizedSizeKey, {
             width: rect.width,
             height: rect.height,
             left: rect.left,
             top: rect.top
-          });
+          }, normalizedPositionKey);
         }
       }, EQUIPMENT_POPUP_GEOMETRY_SAVE_DELAY_MS);
     };
     const endEvents = ["mouseup", "pointerup", "touchend", "transitionend"];
     endEvents.forEach((eventName) => root.addEventListener(eventName, save, true));
     const armWindowSave = () => {
+      hasGeometryInteraction = true;
       const onEnd = () => {
         save();
         window.removeEventListener("mouseup", onEnd, true);
@@ -28946,8 +29272,7 @@ var MesoraDrawingToolBundle = (() => {
       ["mousedown", "pointerdown", "touchstart"].forEach((eventName) => root.removeEventListener(eventName, armWindowSave, true));
       (_a2 = resizeObserver == null ? void 0 : resizeObserver.disconnect) == null ? void 0 : _a2.call(resizeObserver);
     };
-    equipmentPopupGeometryTrackers.set(root, { key, cleanup });
-    save();
+    equipmentPopupGeometryTrackers.set(root, { key: trackerKey, cleanup });
   }
   var VIZI_POPUP_RUNTIME_STYLE = `
     :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) {
@@ -29071,7 +29396,15 @@ var MesoraDrawingToolBundle = (() => {
     }
     return text.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
   }
-  function applyViziPopupDomFixes({ geometryKey = "", popupId = "", title = "", theme = "light" } = {}) {
+  function applyViziPopupDomFixes({
+    geometryKey = "",
+    sizeKey = geometryKey,
+    positionKey = geometryKey,
+    popupId = "",
+    title = "",
+    theme = "light",
+    popupGeometry = null
+  } = {}) {
     if (typeof document === "undefined") {
       return;
     }
@@ -29112,7 +29445,7 @@ var MesoraDrawingToolBundle = (() => {
       roots.add(node);
     });
     roots.forEach((root) => {
-      var _a, _b, _c, _d, _e, _f, _g;
+      var _a, _b, _c, _d, _e;
       if (!(root instanceof HTMLElement || root instanceof SVGElement)) {
         return;
       }
@@ -29122,7 +29455,6 @@ var MesoraDrawingToolBundle = (() => {
       (_d = root.style) == null ? void 0 : _d.setProperty("--vizi-popup-bg", bgColor);
       if (root instanceof HTMLElement) {
         root.style.boxSizing = "border-box";
-        attachPopupGeometryCache(root, geometryKey);
       }
       const clampTargets = Array.from(((_e = root.querySelectorAll) == null ? void 0 : _e.call(root, [
         ".body-wrapper",
@@ -29153,7 +29485,19 @@ var MesoraDrawingToolBundle = (() => {
           element.style.overflowY = "auto";
         }
       });
-      const textTargets = Array.from(((_f = root.querySelectorAll) == null ? void 0 : _f.call(root, [
+    });
+    const geometryRoot = resolvePopupGeometryRoot(roots, popupId);
+    if (geometryRoot instanceof HTMLElement) {
+      geometryRoot.style.boxSizing = "border-box";
+      applyPopupRootGeometry(geometryRoot, popupGeometry);
+      attachPopupGeometryCache(geometryRoot, sizeKey || geometryKey, positionKey || geometryKey);
+    }
+    roots.forEach((root) => {
+      var _a, _b;
+      if (!(root instanceof HTMLElement || root instanceof SVGElement)) {
+        return;
+      }
+      const textTargets = Array.from(((_a = root.querySelectorAll) == null ? void 0 : _a.call(root, [
         ".ia_labelComponent",
         ".ia_labelComponent *",
         ".ia_labelComponent__text",
@@ -29169,7 +29513,7 @@ var MesoraDrawingToolBundle = (() => {
           element.style.color = textColor;
         }
       });
-      Array.from(((_g = root.querySelectorAll) == null ? void 0 : _g.call(root, "svg text, svg tspan")) || []).forEach((element) => {
+      Array.from(((_b = root.querySelectorAll) == null ? void 0 : _b.call(root, "svg text, svg tspan")) || []).forEach((element) => {
         element.setAttribute("fill", textColor);
         element.style.fill = textColor;
       });
@@ -34997,23 +35341,34 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
       const popupViewName = resolveOverlayPopupViewName(overlay);
       const popupTypeName = resolveCanonicalOverlayPopupLeafName(popupViewName) || resolveOverlayPopupLeafName(popupViewName);
-      const popupGeometryKey = normalizePopupGeometryKey(popupTypeName || popupViewName || viewPath);
-      const popupPosition = resolveOverlayPopupPosition(popupGeometryKey);
-      const popupTitle = String((overlay == null ? void 0 : overlay.name) || popupViewName || "Popup").trim().replace(/\.svg$/i, "");
-      const popupId = overlayId ? `svg-popup-${overlayId}` : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
-      const tagPath = String((overlay == null ? void 0 : overlay.tagPath) || "").trim();
+      const overlayEType = resolveOverlayPopupLeafName(overlay == null ? void 0 : overlay.eType) || popupTypeName;
+      const tagPath = String(
+        (overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || (overlay == null ? void 0 : overlay.tagName) || (overlay == null ? void 0 : overlay.tag_path) || (overlay == null ? void 0 : overlay.tag) || (overlay == null ? void 0 : overlay.equipmentPath) || (overlay == null ? void 0 : overlay.equipment_path) || ""
+      ).trim();
       const tagLeaf = getIgnitionTagLeafName(tagPath);
+      const popupSizeKey = normalizePopupGeometryKey(popupTypeName || popupViewName || viewPath);
+      const popupPositionKey = normalizePopupGeometryKey(tagPath || tagLeaf || (overlay == null ? void 0 : overlay.name) || overlayId || popupSizeKey);
+      const popupPosition = resolveOverlayPopupPosition(popupSizeKey, popupPositionKey);
+      const popupTitleBase = String((overlay == null ? void 0 : overlay.name) || popupViewName || "Popup").trim().replace(/\.svg$/i, "");
+      const popupTitleTagName = String(tagLeaf || tagPath || "").trim();
+      const popupTitle = popupTitleTagName;
+      const popupId = overlayId ? `svg-popup-${overlayId}` : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
       const popupTextColor = popupTheme === "dark" ? "#e5eefb" : "#101820";
       const popupMutedTextColor = popupTheme === "dark" ? "rgba(226, 232, 240, 0.72)" : "rgba(15, 23, 42, 0.68)";
       const baseViewParams = {
         overlayId,
-        eType: popupTypeName,
-        type: popupTypeName,
+        eType: overlayEType,
+        etype: overlayEType,
+        type: overlayEType,
+        equipmentType: overlayEType,
+        equipment_type: overlayEType,
+        popupEType: popupTypeName,
+        popup_etype: popupTypeName,
         popupType: popupTypeName,
         viewName: popupTypeName,
         viewPath,
         view_path: viewPath,
-        name: popupTitle,
+        name: popupTitleTagName,
         tagName: tagPath,
         tagPath,
         tag_path: tagPath,
@@ -35050,15 +35405,26 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           ...extraViewParams,
           ...baseViewParams
         },
-        title: popupTitle,
+        title: popupTitle || " ",
         showCloseIcon: true,
         draggable: true,
         resizable: true,
+        viewportBound: true,
         modal: false,
         overlayDismiss: false,
-        style: {
+        width: popupPosition.width,
+        height: popupPosition.height,
+        size: {
           width: popupPosition.width,
-          height: popupPosition.height,
+          height: popupPosition.height
+        },
+        dimensions: {
+          width: popupPosition.width,
+          height: popupPosition.height
+        },
+        style: {
+          width: `${popupPosition.width}px`,
+          height: `${popupPosition.height}px`,
           overflow: "hidden",
           overflowX: "hidden",
           overflowY: "hidden",
@@ -35083,7 +35449,15 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         }
       }
       mounts.activatePopup(popupConfig);
-      scheduleViziPopupDomFixes({ geometryKey: popupGeometryKey, popupId, title: popupTitle, theme: popupTheme });
+      scheduleViziPopupDomFixes({
+        geometryKey: popupSizeKey,
+        sizeKey: popupSizeKey,
+        positionKey: popupPositionKey,
+        popupId,
+        title: popupTitle,
+        theme: popupTheme,
+        popupGeometry: popupPosition
+      });
       if (typeof mounts.focusPopup === "function") {
         mounts.focusPopup(popupId);
       }
@@ -40047,6 +40421,30 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
   function isPlainObject2(value) {
     return value != null && typeof value === "object" && !Array.isArray(value);
   }
+  function getOverlayFillBinding2(overlay) {
+    var _a;
+    const direct = (_a = overlay == null ? void 0 : overlay.bindings) == null ? void 0 : _a.fill;
+    if (isPlainObject2(direct)) {
+      return direct;
+    }
+    const legacy = overlay == null ? void 0 : overlay.fillBinding;
+    if (isPlainObject2(legacy)) {
+      return legacy;
+    }
+    return null;
+  }
+  function getOverlayFillBindingTagPath2(overlay) {
+    var _a, _b, _c, _d;
+    const binding = getOverlayFillBinding2(overlay);
+    return String(
+      (_d = (_c = (_b = (_a = binding == null ? void 0 : binding.tagPath) != null ? _a : binding == null ? void 0 : binding.path) != null ? _b : binding == null ? void 0 : binding.sourcePath) != null ? _c : overlay == null ? void 0 : overlay.tagPath) != null ? _d : ""
+    ).trim();
+  }
+  function getIgnitionTagLeafName2(rawPath) {
+    const text = String(rawPath || "").trim().replace(/^\[[^\]]+\]/, "");
+    const parts = text.split(/[\\/.\]]/).map((part) => part.trim()).filter(Boolean);
+    return parts.pop() || text;
+  }
   function readObjectSegmentValue2(source, segment) {
     if (source == null || !segment) {
       return void 0;
@@ -40963,6 +41361,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
   var EQUIPMENT_POPUP_MIN_WIDTH2 = 280;
   var EQUIPMENT_POPUP_MIN_HEIGHT2 = 220;
   var EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY2 = "vizi.equipmentPopupGeometry.v1";
+  var EQUIPMENT_POPUP_GEOMETRY_SCHEMA_VERSION2 = 3;
   var EQUIPMENT_POPUP_GEOMETRY_SAVE_DELAY_MS2 = 120;
   var equipmentPopupGeometryTrackers2 = /* @__PURE__ */ new WeakMap();
   function normalizePopupGeometryKey2(value) {
@@ -40984,14 +41383,35 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       if (typeof window === "undefined" || !window.localStorage) {
         return;
       }
-      window.localStorage.setItem(EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY2, JSON.stringify(store || {}));
+      window.localStorage.setItem(
+        EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY2,
+        JSON.stringify({
+          ...store || {},
+          schemaVersion: EQUIPMENT_POPUP_GEOMETRY_SCHEMA_VERSION2
+        })
+      );
     } catch (_error) {
     }
   }
-  function readStoredPopupGeometry2(geometryKey) {
-    const key = normalizePopupGeometryKey2(geometryKey);
+  function getPopupGeometryBucket2(store, bucketName) {
+    const bucket = isPlainObject2(store == null ? void 0 : store[bucketName]) ? store[bucketName] : null;
+    return bucket || {};
+  }
+  function readStoredPopupGeometryByScope2(sizeKey, positionKey = sizeKey) {
+    const normalizedSizeKey = normalizePopupGeometryKey2(sizeKey);
+    const normalizedPositionKey = normalizePopupGeometryKey2(positionKey || sizeKey);
     const store = readPopupGeometryStore2();
-    return isPlainObject2(store == null ? void 0 : store[key]) ? store[key] : null;
+    const useScopedSizeCache = Number((store == null ? void 0 : store.schemaVersion) || 0) >= EQUIPMENT_POPUP_GEOMETRY_SCHEMA_VERSION2;
+    const sizes = getPopupGeometryBucket2(store, "sizes");
+    const positions2 = getPopupGeometryBucket2(store, "positions");
+    const sizeGeometry = useScopedSizeCache && isPlainObject2(sizes == null ? void 0 : sizes[normalizedSizeKey]) ? sizes[normalizedSizeKey] : null;
+    const positionGeometry = isPlainObject2(positions2 == null ? void 0 : positions2[normalizedPositionKey]) ? positions2[normalizedPositionKey] : null;
+    return {
+      width: Number(sizeGeometry == null ? void 0 : sizeGeometry.width) || void 0,
+      height: Number(sizeGeometry == null ? void 0 : sizeGeometry.height) || void 0,
+      left: Number(positionGeometry == null ? void 0 : positionGeometry.left) || void 0,
+      top: Number(positionGeometry == null ? void 0 : positionGeometry.top) || void 0
+    };
   }
   function resolvePopupViewportSize2() {
     const viewport = typeof window !== "undefined" ? window : {};
@@ -41035,60 +41455,125 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       top
     };
   }
-  function resolveOverlayPopupPosition2(geometryKey = "") {
-    return clampPopupGeometry2(readStoredPopupGeometry2(geometryKey) || {});
+  function resolveOverlayPopupPosition2(sizeKey = "", positionKey = sizeKey) {
+    return clampPopupGeometry2(readStoredPopupGeometryByScope2(sizeKey, positionKey) || {});
   }
-  function writeStoredPopupGeometry2(geometryKey, geometry) {
-    const key = normalizePopupGeometryKey2(geometryKey);
+  function writeStoredPopupGeometry2(sizeKey, geometry, positionKey = sizeKey) {
+    const normalizedSizeKey = normalizePopupGeometryKey2(sizeKey);
+    const normalizedPositionKey = normalizePopupGeometryKey2(positionKey || sizeKey);
     const nextGeometry = clampPopupGeometry2(geometry);
     const store = readPopupGeometryStore2();
-    store[key] = {
+    store.sizes = getPopupGeometryBucket2(store, "sizes");
+    store.positions = getPopupGeometryBucket2(store, "positions");
+    store.schemaVersion = EQUIPMENT_POPUP_GEOMETRY_SCHEMA_VERSION2;
+    store.sizes[normalizedSizeKey] = {
       width: nextGeometry.width,
-      height: nextGeometry.height,
+      height: nextGeometry.height
+    };
+    store.positions[normalizedPositionKey] = {
       left: nextGeometry.left,
       top: nextGeometry.top
     };
     writePopupGeometryStore2(store);
   }
   function isPopupGeometryRoot2(element) {
-    var _a, _b;
+    var _a, _b, _c, _d;
     if (!(element instanceof HTMLElement)) {
       return false;
     }
-    if ((_a = element.classList) == null ? void 0 : _a.contains("popup-body")) {
+    const classText = String(((_a = element.getAttribute) == null ? void 0 : _a.call(element, "class")) || "");
+    if (/(?:^|\s)(?:popup-body|body-wrapper|view-parent|view|view-root|ia_containerComponent)(?:\s|$)/i.test(classText)) {
       return false;
     }
-    return ((_b = element.matches) == null ? void 0 : _b.call(element, '[role="dialog"], [id*="popup"], [data-popup-id*="svg-popup-"]')) === true;
+    const hasPopupRootAncestor = Boolean(
+      (_c = (_b = element.parentElement) == null ? void 0 : _b.closest) == null ? void 0 : _c.call(_b, '[role="dialog"], [id^="popup-"], [data-popup-id*="svg-popup-"]')
+    );
+    if (hasPopupRootAncestor && element.getAttribute("role") !== "dialog") {
+      return false;
+    }
+    return ((_d = element.matches) == null ? void 0 : _d.call(element, '[role="dialog"], [id^="popup-"], [data-popup-id*="svg-popup-"]')) === true;
   }
-  function attachPopupGeometryCache2(root, geometryKey) {
+  function resolvePopupGeometryRoot2(roots, popupId = "") {
     var _a;
-    if (!(root instanceof HTMLElement) || !geometryKey || !isPopupGeometryRoot2(root)) {
+    const popupIdText = String(popupId || "").trim().toLowerCase();
+    const candidates = Array.from(roots || []).filter((root) => isPopupGeometryRoot2(root));
+    if (!candidates.length) {
+      return null;
+    }
+    const matchingCandidates = popupIdText ? candidates.filter((root) => {
+      var _a2, _b, _c;
+      const identity = [
+        (_a2 = root.getAttribute) == null ? void 0 : _a2.call(root, "id"),
+        (_b = root.getAttribute) == null ? void 0 : _b.call(root, "data-popup-id"),
+        (_c = root.getAttribute) == null ? void 0 : _c.call(root, "data-id")
+      ].map((value) => String(value || "").toLowerCase()).join(" ");
+      return identity.includes(popupIdText);
+    }) : [];
+    const scopedCandidates = matchingCandidates.length ? matchingCandidates : candidates;
+    const outerCandidates = scopedCandidates.filter((candidate) => !scopedCandidates.some((other) => {
+      var _a2;
+      return other !== candidate && ((_a2 = other.contains) == null ? void 0 : _a2.call(other, candidate));
+    }));
+    return ((_a = (outerCandidates.length ? outerCandidates : scopedCandidates).map((root) => {
+      var _a2, _b;
+      const rect = (_a2 = root.getBoundingClientRect) == null ? void 0 : _a2.call(root);
+      const area = Math.max(0, Number(rect == null ? void 0 : rect.width) || 0) * Math.max(0, Number(rect == null ? void 0 : rect.height) || 0);
+      const roleScore = ((_b = root.getAttribute) == null ? void 0 : _b.call(root, "role")) === "dialog" ? 1e9 : 0;
+      return { root, score: roleScore + area };
+    }).sort((left, right) => right.score - left.score)[0]) == null ? void 0 : _a.root) || null;
+  }
+  function isValidPopupGeometryRect2(rect) {
+    return Number(rect == null ? void 0 : rect.width) >= EQUIPMENT_POPUP_MIN_WIDTH2 && Number(rect == null ? void 0 : rect.height) >= EQUIPMENT_POPUP_MIN_HEIGHT2;
+  }
+  function applyPopupRootGeometry2(root, geometry = {}) {
+    if (!(root instanceof HTMLElement)) {
       return;
     }
-    const key = normalizePopupGeometryKey2(geometryKey);
+    const width = Math.round(Number(geometry == null ? void 0 : geometry.width) || 0);
+    const height = Math.round(Number(geometry == null ? void 0 : geometry.height) || 0);
+    if (width >= EQUIPMENT_POPUP_MIN_WIDTH2) {
+      root.style.width = `${width}px`;
+    }
+    if (height >= EQUIPMENT_POPUP_MIN_HEIGHT2) {
+      root.style.height = `${height}px`;
+    }
+  }
+  function attachPopupGeometryCache2(root, sizeKey, positionKey = sizeKey) {
+    var _a;
+    if (!(root instanceof HTMLElement) || !sizeKey || !isPopupGeometryRoot2(root)) {
+      return;
+    }
+    const normalizedSizeKey = normalizePopupGeometryKey2(sizeKey);
+    const normalizedPositionKey = normalizePopupGeometryKey2(positionKey || sizeKey);
+    const trackerKey = `${normalizedSizeKey}:${normalizedPositionKey}`;
     const previous = equipmentPopupGeometryTrackers2.get(root);
-    if ((previous == null ? void 0 : previous.key) === key) {
+    if ((previous == null ? void 0 : previous.key) === trackerKey) {
       return;
     }
     (_a = previous == null ? void 0 : previous.cleanup) == null ? void 0 : _a.call(previous);
     let saveTimer = 0;
+    let hasGeometryInteraction = false;
     const save = () => {
+      if (!hasGeometryInteraction) {
+        return;
+      }
       window.clearTimeout(saveTimer);
       saveTimer = window.setTimeout(() => {
         const rect = root.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          writeStoredPopupGeometry2(key, {
+        if (isValidPopupGeometryRect2(rect)) {
+          writeStoredPopupGeometry2(normalizedSizeKey, {
             width: rect.width,
             height: rect.height,
             left: rect.left,
             top: rect.top
-          });
+          }, normalizedPositionKey);
         }
       }, EQUIPMENT_POPUP_GEOMETRY_SAVE_DELAY_MS2);
     };
     const endEvents = ["mouseup", "pointerup", "touchend", "transitionend"];
     endEvents.forEach((eventName) => root.addEventListener(eventName, save, true));
     const armWindowSave = () => {
+      hasGeometryInteraction = true;
       const onEnd = () => {
         save();
         window.removeEventListener("mouseup", onEnd, true);
@@ -41112,12 +41597,17 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       ["mousedown", "pointerdown", "touchstart"].forEach((eventName) => root.removeEventListener(eventName, armWindowSave, true));
       (_a2 = resizeObserver == null ? void 0 : resizeObserver.disconnect) == null ? void 0 : _a2.call(resizeObserver);
     };
-    equipmentPopupGeometryTrackers2.set(root, { key, cleanup });
-    save();
+    equipmentPopupGeometryTrackers2.set(root, { key: trackerKey, cleanup });
   }
-  function schedulePopupGeometryCache({ geometryKey = "", popupId = "" } = {}) {
+  function schedulePopupGeometryCache({
+    geometryKey = "",
+    sizeKey = geometryKey,
+    positionKey = geometryKey,
+    popupId = "",
+    popupGeometry = null
+  } = {}) {
     var _a;
-    if (typeof window === "undefined" || typeof document === "undefined" || !geometryKey) {
+    if (typeof window === "undefined" || typeof document === "undefined" || !sizeKey) {
       return;
     }
     const escapedPopupId = String(popupId || "").replace(/[^a-zA-Z0-9_-]/g, "\\$&");
@@ -41128,16 +41618,23 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         '[id*="svg-popup-"]',
         '[data-popup-id*="svg-popup-"]'
       ].filter(Boolean);
+      const roots = /* @__PURE__ */ new Set();
       selectors.forEach((selector) => {
         try {
           Array.from(document.querySelectorAll(selector)).forEach((node) => {
             var _a2;
             const root = ((_a2 = node.closest) == null ? void 0 : _a2.call(node, '[role="dialog"], [id*="popup"], [data-popup-id*="svg-popup-"]')) || node;
-            attachPopupGeometryCache2(root, geometryKey);
+            roots.add(root);
+            roots.add(node);
           });
         } catch (_error) {
         }
       });
+      const geometryRoot = resolvePopupGeometryRoot2(roots, popupId);
+      if (geometryRoot instanceof HTMLElement) {
+        applyPopupRootGeometry2(geometryRoot, popupGeometry);
+        attachPopupGeometryCache2(geometryRoot, sizeKey || geometryKey, positionKey || geometryKey);
+      }
     };
     run();
     (_a = window.requestAnimationFrame) == null ? void 0 : _a.call(window, run);
@@ -42196,21 +42693,33 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       }
       const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
       const popupViewName = resolveOverlayPopupViewName2(overlay);
-      const popupGeometryKey = normalizePopupGeometryKey2(popupViewName || viewPath);
-      const popupPosition = resolveOverlayPopupPosition2(popupGeometryKey);
-      const popupTitle = String((overlay == null ? void 0 : overlay.name) || popupViewName || "Popup").trim().replace(/\.svg$/i, "");
+      const popupTypeName = resolveCanonicalOverlayPopupLeafName2(popupViewName) || resolveOverlayPopupLeafName2(popupViewName);
+      const overlayEType = resolveOverlayPopupLeafName2(overlay == null ? void 0 : overlay.eType) || popupTypeName;
+      const tagPath = String(
+        (overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath2(overlay) || (overlay == null ? void 0 : overlay.tagName) || (overlay == null ? void 0 : overlay.tag_path) || (overlay == null ? void 0 : overlay.tag) || (overlay == null ? void 0 : overlay.equipmentPath) || (overlay == null ? void 0 : overlay.equipment_path) || ""
+      ).trim();
+      const tagLeaf = getIgnitionTagLeafName2(tagPath);
+      const popupSizeKey = normalizePopupGeometryKey2(popupTypeName || popupViewName || viewPath);
+      const popupPositionKey = normalizePopupGeometryKey2(tagPath || tagLeaf || (overlay == null ? void 0 : overlay.name) || overlayId || popupSizeKey);
+      const popupPosition = resolveOverlayPopupPosition2(popupSizeKey, popupPositionKey);
+      const popupTitleBase = String((overlay == null ? void 0 : overlay.name) || popupViewName || "Popup").trim().replace(/\.svg$/i, "");
+      const popupTitleTagName = String(tagLeaf || tagPath || "").trim();
+      const popupTitle = popupTitleTagName;
       const popupId = overlayId ? `svg-popup-${overlayId}` : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
-      const tagPath = String((overlay == null ? void 0 : overlay.tagPath) || "").trim();
-      const tagLeaf = tagPath.split(/[\\/.\]]/).filter(Boolean).pop() || "";
       const baseViewParams = {
         overlayId,
-        eType: popupViewName,
-        type: popupViewName,
-        popupType: popupViewName,
-        viewName: popupViewName,
+        eType: overlayEType,
+        etype: overlayEType,
+        type: overlayEType,
+        equipmentType: overlayEType,
+        equipment_type: overlayEType,
+        popupEType: popupTypeName,
+        popup_etype: popupTypeName,
+        popupType: popupTypeName,
+        viewName: popupTypeName,
         viewPath,
         view_path: viewPath,
-        name: popupTitle,
+        name: popupTitleTagName,
         tagName: tagPath,
         tagPath,
         tag_path: tagPath,
@@ -42241,15 +42750,26 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           ...extraViewParams,
           ...baseViewParams
         },
-        title: popupTitle,
+        title: popupTitle || " ",
         showCloseIcon: true,
         draggable: true,
         resizable: true,
+        viewportBound: true,
         modal: false,
         overlayDismiss: false,
-        style: {
+        width: popupPosition.width,
+        height: popupPosition.height,
+        size: {
           width: popupPosition.width,
-          height: popupPosition.height,
+          height: popupPosition.height
+        },
+        dimensions: {
+          width: popupPosition.width,
+          height: popupPosition.height
+        },
+        style: {
+          width: `${popupPosition.width}px`,
+          height: `${popupPosition.height}px`,
           overflow: "hidden",
           overflowX: "hidden",
           overflowY: "hidden"
@@ -42265,7 +42785,13 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           overflowY: "auto"
         }
       });
-      schedulePopupGeometryCache({ geometryKey: popupGeometryKey, popupId });
+      schedulePopupGeometryCache({
+        geometryKey: popupSizeKey,
+        sizeKey: popupSizeKey,
+        positionKey: popupPositionKey,
+        popupId,
+        popupGeometry: popupPosition
+      });
       if (typeof mounts.focusPopup === "function") {
         mounts.focusPopup(popupId);
       }

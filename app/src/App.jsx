@@ -6128,24 +6128,6 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       setSelectedOverlayIds([]);
     }
   }, [selectionMode, selectedIds, selectedOverlayIds]);
-  useEffect(() => {
-    setSvgOverlays((prev) => {
-      const list = Array.isArray(prev) ? prev : [];
-      let changed = false;
-      const next = list.map((o) => {
-        if (!isConveyorScrewOverlay(o)) return o;
-        const sx = overlayScaleX(o);
-        const sy = overlayScaleY(o);
-        if (Math.abs(sx - sy) < 1e-6) return o;
-        changed = true;
-        const uniform = Math.max(sx, sy, 0.05);
-        return { ...o, scale: uniform, scaleX: uniform, scaleY: uniform };
-      });
-      if (!changed) return prev;
-      overlaysRef.current = next;
-      return next;
-    });
-  }, [svgOverlays]);
   useEffect(() => { duplicateOffsetRef.current = Number(duplicateOffset) || 0; }, [duplicateOffset]);
   useEffect(() => {
     if (!selectedSegment) return;
@@ -10506,11 +10488,24 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return Boolean(overlay?.static || overlay?.isStatic || overlay?.staticSvg);
   }
 
+  function isConveyorScrewIdentity(value) {
+    const compact = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    return compact.includes("conveyorscrew") ||
+      compact.includes("screwconveyor") ||
+      (compact.includes("conveyor") && compact.includes("screw"));
+  }
+
   function isConveyorScrewOverlay(overlay) {
-    const raw = String(resolveOverlayEType(overlay) || overlay?.eType || "").trim().toLowerCase();
-    if (!raw) return false;
-    const compact = raw.replace(/[^a-z0-9]/g, "");
-    return compact.includes("conveyorscrew") || (compact.includes("conveyor") && compact.includes("screw"));
+    const raw = [
+      resolveOverlayEType(overlay),
+      overlay?.eType,
+      overlay?.sourceKey,
+      overlay?.name,
+      overlay?.label,
+      overlay?.type,
+      /\bid\s*=\s*(["'])auger-flight\1/i.test(String(overlay?.inner || "")) ? "ConveyorScrew" : "",
+    ].join(" ");
+    return isConveyorScrewIdentity(raw);
   }
 
   function overlayRotationDegrees(overlay) {
@@ -14991,6 +14986,48 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return next;
   }
 
+  function isBinLikeSvgOverlayForStroke(overlay) {
+    const eTypeKey = String(overlay?.eType || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+    const sourceText = [
+      overlay?.sourceKey,
+      overlay?.name,
+      overlay?.label,
+    ].map((value) => String(value || "")).join(" ").toLowerCase();
+    return eTypeKey === "bin" ||
+      eTypeKey.startsWith("bin") ||
+      eTypeKey.includes("silo") ||
+      /(?:^|[\\/])bins(?:[\\/]|$)/i.test(String(overlay?.sourceKey || "")) ||
+      /\b(silo|flourbin|surgebin)\b/i.test(sourceText);
+  }
+
+  function isLegacyDarkSvgStrokePaint(value) {
+    const paint = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+    return paint === "#000" ||
+      paint === "#000000" ||
+      paint === "black" ||
+      paint === "rgb(0,0,0)" ||
+      paint === "rgba(0,0,0,1)" ||
+      paint === "#111" ||
+      paint === "#111111" ||
+      paint === "#1f1f1f" ||
+      paint === "#222" ||
+      paint === "#222222" ||
+      paint === "#2e2e2e" ||
+      paint === "#333" ||
+      paint === "#333333";
+  }
+
+  function normalizeSvgOverlayStrokeForApply(overlay, stroke) {
+    const strokeColor = String(stroke || "").trim();
+    if (!strokeColor) return strokeColor;
+    return isBinLikeSvgOverlayForStroke(overlay) && isLegacyDarkSvgStrokePaint(strokeColor)
+      ? "#808080"
+      : strokeColor;
+  }
+
   function applySingleStroke(nextStroke) {
     const c = String(nextStroke || "").trim();
     if (!c) return;
@@ -15017,12 +15054,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
       setSvgOverlays((prev) =>
         prev.map((o) =>
           o.id === singleId
-            ? {
+            ? (() => {
+                const nextSvgStroke = normalizeSvgOverlayStrokeForApply(o, c);
+                return {
                 ...o,
-                stroke: c,
+                stroke: nextSvgStroke,
                 strokeMode: "force",
-                inner: o.widget ? o.inner : updateSvgInnerStroke(o.inner, c),
-              }
+                inner: o.widget ? o.inner : updateSvgInnerStroke(o.inner, nextSvgStroke),
+              };
+            })()
             : o
         )
       );
@@ -15043,12 +15083,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
       setSvgOverlays((prev) =>
         prev.map((o) =>
           selOverlay.has(String(o?.id || ""))
-            ? {
+            ? (() => {
+                const nextSvgStroke = normalizeSvgOverlayStrokeForApply(o, c);
+                return {
                 ...o,
-                stroke: c,
+                stroke: nextSvgStroke,
                 strokeMode: o?.widget ? o?.strokeMode : "force",
-                inner: o?.widget ? o?.inner : updateSvgInnerStroke(o?.inner, c),
-              }
+                inner: o?.widget ? o?.inner : updateSvgInnerStroke(o?.inner, nextSvgStroke),
+              };
+            })()
             : o
         )
       );
@@ -15228,8 +15271,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const id = selectedOverlayIds[0];
       const o = svgOverlays.find((x) => x.id === id);
       if (!o) return;
-      const isConveyorScrew = isConveyorScrewOverlay(o);
-
       // use your key-based bbox first (this is {width: 25, height: 25} for your files)
       const bb = o.bbox || overlayLocalBBox(id);
       if (!bb) return;
@@ -15240,7 +15281,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       let nextScaleX = overlayScaleX(o);
       let nextScaleY = overlayScaleY(o);
 
-      if (aspectLocked || isConveyorScrew) {
+      if (aspectLocked) {
         let nextScale = nextScaleX;
         if (W != null && bb.width > 0) nextScale = W / bb.width;
         if (W == null && H != null && bb.height > 0) nextScale = H / bb.height;
@@ -15343,7 +15384,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     }
 
 
-    // Overlays: uniform scale only
+    // Overlays: preserve independent X/Y scaling unless the caller explicitly locked aspect.
     if (selectedOverlayIds.length) {
       setSvgOverlays((prev) =>
         prev.map((o) => {
@@ -15351,13 +15392,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
           const newTx = base.x + (o.tx - base.x) * sx + dx;
           const newTy = base.y + (o.ty - base.y) * sy + dy;
-          const isConveyorScrew = isConveyorScrewOverlay(o);
           const baseScaleX = overlayScaleX(o);
           const baseScaleY = overlayScaleY(o);
-          const uniformRatio = Math.min(Math.abs(sx), Math.abs(sy));
-          const uniformScale = Math.max(0.05, Math.max(baseScaleX, baseScaleY) * uniformRatio);
-          const newScaleX = isConveyorScrew ? uniformScale : Math.max(0.05, baseScaleX * sx);
-          const newScaleY = isConveyorScrew ? uniformScale : Math.max(0.05, baseScaleY * sy);
+          const newScaleX = Math.max(0.05, baseScaleX * sx);
+          const newScaleY = Math.max(0.05, baseScaleY * sy);
 
           return { ...o, tx: newTx, ty: newTy, scale: newScaleX, scaleX: newScaleX, scaleY: newScaleY };
         })
@@ -16765,13 +16803,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
         base.forEach((rec) => {
           const idKey = String(rec?.id || "");
           if (!idKey) return;
-          const current = currentById.get(idKey) || null;
-          const isConveyorScrew = isConveyorScrewOverlay(current || rec);
           const sxBase = Math.max(0.05, Math.min(100, Number(rec?.sx || 1) * ratio));
           const syBase = Math.max(0.05, Math.min(100, Number(rec?.sy || 1) * ratio));
-          const uniform = Math.max(0.05, Math.min(100, Math.max(Number(rec?.sx || 1), Number(rec?.sy || 1)) * ratio));
-          const sx = isConveyorScrew ? uniform : sxBase;
-          const sy = isConveyorScrew ? uniform : syBase;
+          const sx = sxBase;
+          const sy = syBase;
+          const current = currentById.get(idKey) || null;
           const bb = rec?.bb || current?.bbox || overlayLocalBBox(idKey);
           if (!bb) {
             const txRaw = anchorWorld.x + (Number(rec?.tx || 0) - anchorWorld.x) * ratio;
@@ -16875,6 +16911,53 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
       const bb = baseBbox || o?.bbox || overlayLocalBBox(id);
       if (!bb) return;
+      if (isConveyorScrewOverlay(o)) {
+        const handle = String(corner || "").toUpperCase();
+        const movingLocal = {
+          x: handle.includes("L")
+            ? Number(bb.x || 0)
+            : Number(bb.x || 0) + Number(bb.width || 0),
+          y: handle.includes("T")
+            ? Number(bb.y || 0)
+            : Number(bb.y || 0) + Number(bb.height || 0),
+        };
+        const localDx = movingLocal.x - Number(anchorLocal?.x || 0);
+        const localDy = movingLocal.y - Number(anchorLocal?.y || 0);
+        const rotation = overlayRotationDegrees(o) * Math.PI / 180;
+        const worldDx = Number(resizePoint.x || 0) - Number(anchorWorld.x || 0);
+        const worldDy = Number(resizePoint.y || 0) - Number(anchorWorld.y || 0);
+        const projectedX = worldDx * Math.cos(rotation) + worldDy * Math.sin(rotation);
+        const projectedY = -worldDx * Math.sin(rotation) + worldDy * Math.cos(rotation);
+        const newScaleX = Math.max(
+          0.05,
+          Math.min(100, Math.abs(localDx) > 1e-6 ? Math.abs(projectedX / localDx) : Math.max(0.0001, Number(origScaleX || 1)))
+        );
+        const newScaleY = Math.max(
+          0.05,
+          Math.min(100, Math.abs(localDy) > 1e-6 ? Math.abs(projectedY / localDy) : Math.max(0.0001, Number(origScaleY || 1)))
+        );
+        const nextTranslation = overlayTranslationForLocalPoint(
+          o,
+          anchorLocal,
+          anchorWorld,
+          newScaleX,
+          newScaleY,
+          bb
+        );
+        applyOverlayResizePreview(new Map([[String(id), {
+          tx: nextTranslation.tx,
+          ty: nextTranslation.ty,
+          sx: newScaleX,
+          sy: newScaleY,
+          bb: {
+            x: Number(bb.x || 0),
+            y: Number(bb.y || 0),
+            width: Number(bb.width || 0),
+            height: Number(bb.height || 0),
+          },
+        }]]));
+        return;
+      }
       const ratio = Math.max(
         0.05,
         Math.min(100, Math.max(0.0001, distance(resizePoint, anchorWorld)) / Math.max(1, Number(startDist || 1)))

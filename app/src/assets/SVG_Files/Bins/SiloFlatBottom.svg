@@ -16,7 +16,90 @@
    xmlns:cc="http://creativecommons.org/ns#"
    xmlns:dc="http://purl.org/dc/elements/1.1/">
   <defs
-     id="defs55" />
+     id="defs55">
+    <linearGradient
+       id="siloDefaultFill"
+       x1="0"
+       y1="0"
+       x2="1"
+       y2="0">
+      <stop
+         offset="0%"
+         stop-color="#b9c3c3" />
+      <stop
+         offset="16%"
+         stop-color="#e5ebeb" />
+      <stop
+         offset="38%"
+         stop-color="#fbfdfd" />
+      <stop
+         offset="58%"
+         stop-color="#d8e0e0" />
+      <stop
+         offset="82%"
+         stop-color="#c3cccc" />
+      <stop
+         offset="100%"
+         stop-color="#98a4a4" />
+    </linearGradient>
+    <linearGradient
+       id="siloRoofFill"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="1">
+      <stop
+         offset="0%"
+         stop-color="#f9fbfb" />
+      <stop
+         offset="46%"
+         stop-color="#dce4e4" />
+      <stop
+         offset="78%"
+         stop-color="#c0caca" />
+      <stop
+         offset="100%"
+         stop-color="#9aa6a6" />
+    </linearGradient>
+    <linearGradient
+       id="siloRimFill"
+       x1="0"
+       y1="0"
+       x2="1"
+       y2="0">
+      <stop
+         offset="0%"
+         stop-color="#aeb8b8" />
+      <stop
+         offset="28%"
+         stop-color="#eef3f3" />
+      <stop
+         offset="58%"
+         stop-color="#d1dada" />
+      <stop
+         offset="100%"
+         stop-color="#8f9b9b" />
+    </linearGradient>
+    <linearGradient
+       id="siloHopperFill"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="1">
+      <stop
+         offset="0%"
+         stop-color="#eef3f3" />
+      <stop
+         offset="42%"
+         stop-color="#d2dbdb" />
+      <stop
+         offset="72%"
+         stop-color="#b7c1c1" />
+      <stop
+         offset="100%"
+         stop-color="#929e9e" />
+    </linearGradient>
+  </defs>
   <sodipodi:namedview
      id="namedview55"
      pagecolor="#ffffff"
@@ -42,7 +125,7 @@
   <g
      id="flat-bottom-silo"
      fill="none"
-     stroke="#2e2e2e"
+     stroke="#808080"
      stroke-linecap="round"
      stroke-linejoin="round">
     <g
@@ -51,27 +134,28 @@
       <path
          id="main-tall-bin"
          d="m 123.91727,247.94346 c 0,-22.00457 242.77386,-22.00457 242.77386,0 v 457.08668 c 0,29.00603 -242.77386,29.00603 -242.77386,0 z"
-         fill="#e9e9e9"
+         fill="url(#siloDefaultFill)"
          stroke-width="2.83454"
-         sodipodi:nodetypes="sssss" />
+         sodipodi:nodetypes="sssss"
+         data-vizi-fill-target="true" />
       <path
          id="top-bin-collar-fill"
          d="m 125.70237,243.94263 c 34.55326,15.79163 204.6504,15.79163 239.20366,0 l 1.7851,4.00083 c 0,22.00457 -242.77386,22.00457 -242.77386,0 z"
-         fill="#c9c9c9"
+         fill="url(#siloRimFill)"
          stroke-width="2.83454"
          opacity="0.96" />
       <path
          id="top-bin-inner-shadow"
          d="m 127.31442,246.68345 c 39.65328,10.54692 196.32627,10.54692 235.97955,0"
          fill="none"
-         stroke="#8a8a8a"
+         stroke="#808080"
          stroke-width="1.88969"
          opacity="0.58" />
       <path
          id="top-bin-front-lip"
          d="m 123.91727,247.94346 c 0,22.00457 242.77386,22.00457 242.77386,0"
          fill="none"
-         stroke="#4c4c4c"
+         stroke="#808080"
          stroke-width="2.36212"
          opacity="0.8" />
       <path
@@ -81,26 +165,28 @@
       <path
          id="hopper"
          d="m 126.09561,704.99128 c 34.89796,17.02094 203.52044,17.02094 238.41737,0 v 21.11137 c -34.89796,20.11453 -203.52044,20.11453 -238.41737,0 z"
-         fill="#e9e9e9"
+         fill="url(#siloHopperFill)"
          stroke-width="2.83454"
-         opacity="0.98" />
+         opacity="0.98"
+         data-vizi-fill-target="true" />
       <path
          id="flat-bottom-lip"
          d="m 126.09561,726.10265 c 34.89796,20.11453 203.52044,20.11453 238.41737,0"
          fill="none"
-         stroke="#4c4c4c"
+         stroke="#808080"
          stroke-width="2.36212"
          opacity="0.78" />
       <path
          id="roof"
          d="M 125.70237,243.94263 245.3042,121.91727 364.90603,243.94263 c 0,0 -22.95655,13.69533 -119.14082,11.75664 -114.09729,-2.29974 -120.06284,-11.75664 -120.06284,-11.75664 z"
-         fill="#e9e9e9"
+         fill="url(#siloRoofFill)"
          stroke-width="2.83454"
-         sodipodi:nodetypes="cccsc" />
+         sodipodi:nodetypes="cccsc"
+         data-vizi-fill-target="true" />
       <path
          id="roof-panel-lines"
          d="m 245.3042,121.93398 v 127.87026 m -91.91604,0 91.91604,-127.87026 M 185.51416,249.80424 245.3042,121.93398 M 214.96298,249.80424 245.3042,121.93398 M 275.64542,249.80424 245.3042,121.93398 M 305.09424,249.80424 245.3042,121.93398 M 337.22024,249.80424 245.3042,121.93398"
-         stroke="#555555"
+         stroke="#808080"
          stroke-width="1.45068" />
       <g
          id="top-receiving-head-no-ladder"
@@ -109,7 +195,7 @@
         <path
            id="head-transition"
            d="m 236,124 -12,30 h 72 l -12,-30 z"
-           fill="#dddddd" />
+           fill="url(#siloRimFill)" />
       </g>
       <g
          id="labels-and-access-panels"
@@ -193,8 +279,8 @@
            width="165.95827"
            height="82.450607"
            rx="23.156971"
-           fill="#e5e5e5"
-           style="stroke-width:3.49845;fill:#ffffff;fill-opacity:1" />
+           fill="url(#siloRimFill)"
+           style="stroke-width:3.49845;fill:url(#siloRimFill);fill-opacity:1" />
         <text
            id="wheat-text"
            x="256.72473"

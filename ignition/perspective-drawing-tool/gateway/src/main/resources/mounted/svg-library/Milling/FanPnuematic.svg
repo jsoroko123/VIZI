@@ -6,7 +6,7 @@
    viewBox="0 0 6.812548 6.288001"
    version="1.1"
    id="svg190489"
-   xmlns="http://www.w3.org/2000/svg" kewidth="100" keheight="92.3" eType="FanPnuematic" fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+   xmlns="http://www.w3.org/2000/svg" kewidth="100" keheight="92.3" eType="Motor" fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
   
   <defs
      id="defs190486">
@@ -78,3 +78,4 @@
        d="m 72.058401,38.890416 v 6.08645 h 1.437153 v -6.08645 z m 1.449039,5.084961 v 1.00304 h 5.163509 v -1.00304 z" />
   </g>
 </svg>
+

@@ -7,7 +7,7 @@
   xmlns="http://www.w3.org/2000/svg"
   kewidth="100"
   keheight="99.997"
-  eType="fan"
+  eType="Motor"
  fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
   <defs>
     <linearGradient id="fanShellFill" x1="0" y1="0" x2="0" y2="1">
@@ -38,3 +38,4 @@
     <circle cx="1.9554995" cy="1.955442" r="0.20" fill="url(#fanHubFill)" stroke="#808080" stroke-width="0.08" />
   </g>
 </svg>
+

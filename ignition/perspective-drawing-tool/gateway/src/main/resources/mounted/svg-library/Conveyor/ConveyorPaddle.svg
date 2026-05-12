@@ -1,26 +1,33 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 19.67918 2.1332762" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="10.84" eType="ConveyorPaddle" stroke="#808080" stroke-width="0.2952" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 19.67918 2.1332762" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="10.84" eType="ConveyorPaddle" fill="#D7DADE" stroke="#66717d" stroke-linejoin="round" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+
   <defs id="defs1">
-    <linearGradient id="swatch1">
-      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    <linearGradient id="convBodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="45%" stop-color="#d5dce4" />
+      <stop offset="100%" stop-color="#929da9" />
+    </linearGradient>
+    <linearGradient id="convCapFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#eef2f6" />
+      <stop offset="100%" stop-color="#7d8996" />
+    </linearGradient>
+    <linearGradient id="convDarkFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#aeb8c3" />
+      <stop offset="100%" stop-color="#596574" />
     </linearGradient>
   </defs>
-  <g id="layer1" transform="translate(-6.2225274,-0.70096745)">
-    <rect height="1.9332762" id="body" width="19.479177" x="6.3225274" y="0.80096745" stroke-width="0.2952" stroke-dasharray="none" style="opacity:1" fill="#D7DADE" />
-    <g id="g1" transform="translate(0,-3.7041666)">
-      <path d="M 15.687078,4.8608603 V 5.5787122" id="path1" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" />
-      <path d="M 16.745412,5.390027 V 6.1078789" id="path2" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" />
-      <path d="M 17.803746,4.8608603 V 5.5787122" id="path3" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" />
-      <path d="M 18.86208,5.390027 V 6.1078789" id="path4" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" />
-      <path d="M 19.920414,4.8608603 V 5.5787122" id="path5" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" />
-      <path d="M 20.978748,5.390027 V 6.1078789" id="path6" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" />
-      <path d="M 22.037082,4.8608603 V 5.5787122" id="path7" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" />
-      <path d="M 23.095416,5.390027 V 6.1078789" id="path8" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" />
-      <path d="M 24.15375,4.8608603 V 5.5787122" id="path9" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" />
-      <path d="M 14.628744,5.390027 V 6.1078789" id="path11" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" />
-      <path d="M 13.57041,4.8608603 V 5.5787122" id="path12" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" />
-      <path d="M 12.512076,5.390027 V 6.1078789" id="path13" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" />
-      <path d="M 11.722199,5.4839482 H 25.229984" id="path15" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" />
-    </g>
+  <g id="layer1">
+    <rect id="shadow" x="0.4874" y="0.5444" width="18.892" height="1.536" rx="0.2765" fill="#111827" opacity="0.13" stroke="none" />
+    <rect id="body" data-vizi-fill-target="true" x="0.3936" y="0.2987" width="18.892" height="1.536" rx="0.2765" fill="url(#convBodyFill)" stroke="#5b6470" stroke-width="0.0853" />
+    <path id="tube-highlight" d="M 1.1493 0.6673 H 18.5299" fill="none" stroke="#ffffff" stroke-width="0.0469" opacity="0.55" />
+    <path id="shaft" d="M 1.3382 1.0666 H 18.341" fill="none" stroke="#525d69" stroke-width="0.0811" opacity="0.78" />
+    <path id="paddle-1" d="M 2.4927 1.0666 L 2.9545 1.466" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-2" d="M 4.5918 1.0666 L 5.0536 0.6673" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-3" d="M 6.6909 1.0666 L 7.1527 1.466" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-4" d="M 8.79 1.0666 L 9.2518 0.6673" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-5" d="M 10.8891 1.0666 L 11.351 1.466" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-6" d="M 12.9883 1.0666 L 13.4501 0.6673" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-7" d="M 15.0874 1.0666 L 15.5492 1.466" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
+    <path id="paddle-8" d="M 17.1865 1.0666 L 17.6483 0.6673" fill="none" stroke="#6f7a86" stroke-width="0.0768" opacity="0.82" />
   </g>
 </svg>
