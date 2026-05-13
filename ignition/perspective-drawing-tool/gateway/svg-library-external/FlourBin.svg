@@ -12,7 +12,7 @@
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns:xlink="http://www.w3.org/1999/xlink"
    xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg">
+   xmlns:svg="http://www.w3.org/2000/svg" kewidth="100" keheight="150" stroke-width="12" stroke-linejoin="round" stroke-linecap="round">
   <sodipodi:namedview
      id="namedview15"
      pagecolor="#ffffff"
@@ -97,7 +97,7 @@
      inkscape:label="Flour Bin"
      fill="none"
      stroke="#1f1f1f"
-     stroke-width="5"
+     stroke-width="12"
      stroke-linejoin="round"
      stroke-linecap="round">
     <g
@@ -108,54 +108,54 @@
          x="178"
          y="740"
          width="18"
-         height="395" />
+         height="395"  stroke-width="12"/>
       <rect
          id="left_leg_inner"
          x="210"
          y="740"
          width="18"
-         height="395" />
+         height="395"  stroke-width="12"/>
       <rect
          id="right_leg_inner"
          x="572"
          y="740"
          width="18"
-         height="395" />
+         height="395"  stroke-width="12"/>
       <rect
          id="right_leg_outer"
          x="604"
          y="740"
          width="18"
-         height="395" />
+         height="395"  stroke-width="12"/>
       <rect
          id="left_foot"
          x="162"
          y="1135"
          width="86"
-         height="14" />
+         height="14"  stroke-width="12"/>
       <rect
          id="right_foot"
          x="552"
          y="1135"
          width="86"
-         height="14" />
+         height="14"  stroke-width="12"/>
     </g>
     <!-- top cone -->
     <path
        id="top_cone"
        d="M145 240 L400 92 L655 240 Z"
-       fill="url(#metal)" />
+       fill="url(#metal)"  stroke-width="12"/>
     <ellipse
        id="top_rim_outer"
        cx="400"
        cy="240"
        rx="255"
        ry="25"
-       fill="#cfd6d6" />
+       fill="#cfd6d6"  stroke-width="12" data-vizi-fill-target="true"/>
     <path
        id="top_rim_inner"
        d="M148 240 C250 258 550 258 652 240"
-       stroke-width="3" />
+       stroke-width="12" />
     <!-- vent stack -->
     <rect
        id="vent_stack"
@@ -164,21 +164,21 @@
        width="57.399654"
        height="35.409939"
        fill="url(#metal)"
-       style="fill:url(#linearGradient15);stroke-width:3.60035" />
+       style="fill:url(#linearGradient15);stroke-width:12" />
     <ellipse
        id="vent_top"
        cx="400"
        cy="80"
        rx="35"
        ry="12"
-       fill="#eef2f2" />
+       fill="#eef2f2"  stroke-width="12" data-vizi-fill-target="true"/>
     <ellipse
        id="vent_bottom"
        cx="400"
        cy="110"
        rx="35"
        ry="12"
-       fill="#cfd6d6" />
+       fill="#cfd6d6"  stroke-width="12" data-vizi-fill-target="true"/>
     <!-- manway hatch -->
     <!-- cylindrical shell -->
     <rect
@@ -187,21 +187,21 @@
        y="240"
        width="510"
        height="500"
-       fill="url(#metal)" />
+       fill="url(#metal)"  stroke-width="12"/>
     <line
        id="shell_band_1"
        x1="145"
        y1="410"
        x2="655"
        y2="410"
-       stroke-width="3" />
+       stroke-width="12" />
     <line
        id="shell_band_2"
        x1="145"
        y1="580"
        x2="655"
        y2="580"
-       stroke-width="3" />
+       stroke-width="12" />
     <!-- product name / bin label -->
     <g
        id="product_name_label"
@@ -227,7 +227,7 @@
          ry="34"
          fill="#f9f9f9"
          stroke="#333"
-         stroke-width="5" />
+         stroke-width="12" />
       <rect
          id="bin_label_inner"
          x="285"
@@ -238,7 +238,7 @@
          ry="22"
          fill="none"
          stroke="#333"
-         stroke-width="4" />
+         stroke-width="12" />
       <text
          id="bin_label_text"
          x="388"
@@ -256,7 +256,7 @@
        d="M 208.17668,883.209 594.90815,882.56225 480.25037,1000.6152 H 319.73978 Z"
        fill="url(#metal)"
        sodipodi:nodetypes="ccccc"
-       style="fill:url(#metal);stroke-width:3.76977" />
+       style="fill:url(#metal);stroke-width:12" />
     <!-- outlet slide gate -->
     <g
        id="outlet_slide_gate">
@@ -266,49 +266,49 @@
          rx="72"
          ry="16"
          fill="#d9dfdf"
-         id="ellipse10" />
+         id="ellipse10"  stroke-width="12" data-vizi-fill-target="true"/>
       <rect
          x="340"
          y="1000"
          width="120"
          height="34"
          fill="#d9dfdf"
-         id="rect11" />
+         id="rect11"  stroke-width="12" data-vizi-fill-target="true"/>
       <rect
          x="325"
          y="1034"
          width="150"
          height="20"
          fill="#c8d0d0"
-         id="rect12" />
+         id="rect12"  stroke-width="12" data-vizi-fill-target="true"/>
       <rect
          x="350"
          y="1054"
          width="100"
          height="70"
          fill="url(#metal)"
-         id="rect13" />
+         id="rect13"  stroke-width="12"/>
       <ellipse
          cx="400"
          cy="1124"
          rx="62"
          ry="12"
          fill="#d9dfdf"
-         id="ellipse13" />
+         id="ellipse13"  stroke-width="12" data-vizi-fill-target="true"/>
       <rect
          x="315"
          y="1110"
          width="28"
          height="18"
          fill="#d9dfdf"
-         id="rect14" />
+         id="rect14"  stroke-width="12" data-vizi-fill-target="true"/>
       <rect
          x="457"
          y="1110"
          width="28"
          height="18"
          fill="#d9dfdf"
-         id="rect15" />
+         id="rect15"  stroke-width="12" data-vizi-fill-target="true"/>
     </g>
     <!-- support legs -->
     <!-- cross bracing -->
@@ -318,13 +318,13 @@
        y1="1100"
        x2="340"
        y2="1000"
-       stroke-width="4" />
+       stroke-width="12" />
     <line
        id="brace_low_right"
        x1="590"
        y1="1100"
        x2="460"
        y2="1000"
-       stroke-width="4" />
+       stroke-width="12" />
   </g>
 </svg>

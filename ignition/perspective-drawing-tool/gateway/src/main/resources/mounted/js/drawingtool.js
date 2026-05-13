@@ -321,6 +321,42 @@ var MesoraDrawingToolBundle = (() => {
   // ../../app/src/utils/widgetTemplates.js
   var DEFAULT_WIDGET_WRITE_MODE = "ignition";
   var DEFAULT_WIDGET_OPC_SERVER = "Ignition OPC UA Server";
+  var FIXED_ASPECT_WIDGET_SIZES = {
+    routedisplay: { width: 320, height: 128 },
+    scaleadapter: { width: 320, height: 126 },
+    scaleadaptor: { width: 320, height: 126 }
+  };
+  function normalizeWidgetKind(widgetKind) {
+    return String(widgetKind || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  }
+  function getWidgetVisualBBox(overlay, fallbackBBox = null) {
+    var _a;
+    const rawBBox = fallbackBBox || (overlay == null ? void 0 : overlay.bbox);
+    if (!rawBBox || typeof rawBBox !== "object") {
+      return rawBBox;
+    }
+    const bbox = {
+      x: Number(rawBBox.x || rawBBox.left || 0),
+      y: Number(rawBBox.y || rawBBox.top || 0),
+      width: Number(rawBBox.width || rawBBox.w || 0),
+      height: Number(rawBBox.height || rawBBox.h || 0)
+    };
+    if (!Number.isFinite(bbox.width) || !Number.isFinite(bbox.height) || bbox.width <= 0 || bbox.height <= 0) {
+      return rawBBox;
+    }
+    const widgetSize = FIXED_ASPECT_WIDGET_SIZES[normalizeWidgetKind((_a = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a.kind)];
+    if (!widgetSize) {
+      return bbox;
+    }
+    const targetHeight = Math.max(60, bbox.width * widgetSize.height / widgetSize.width);
+    if (bbox.height <= targetHeight + 1) {
+      return bbox;
+    }
+    return {
+      ...bbox,
+      height: targetHeight
+    };
+  }
   function resolveWidgetWriteMode(widget, tagPath = "") {
     var _a, _b, _c;
     const explicit = String(
@@ -328,6 +364,9 @@ var MesoraDrawingToolBundle = (() => {
     ).trim().toLowerCase();
     if (explicit === "view" || explicit === "popup" || explicit === "openview" || explicit === "open-view") {
       return "view";
+    }
+    if (explicit === "script" || explicit === "gateway-script" || explicit === "gatewayscript" || explicit === "project-script" || explicit === "projectscript") {
+      return "script";
     }
     if (explicit === "opc" || explicit === "ignition") {
       return explicit;
@@ -377,7 +416,7 @@ var MesoraDrawingToolBundle = (() => {
       },
       routeDisplay: {
         name: "Widget-RouteDisplay.svg",
-        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 132"><rect x="1" y="1" width="318" height="130" rx="14" fill="#0f172a" stroke="#334155" stroke-width="2"/><rect x="10" y="10" width="300" height="28" rx="9" fill="#2563eb"/><text x="160" y="29" text-anchor="middle" fill="#ffffff" font-size="13" font-family="system-ui" font-weight="800">Route Display</text><text x="18" y="62" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="700">Job Number</text><text x="302" y="62" text-anchor="end" fill="#e2e8f0" font-size="12" font-family="system-ui" font-weight="800">120</text><text x="18" y="84" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="700">Job Step</text><text x="302" y="84" text-anchor="end" fill="#e2e8f0" font-size="12" font-family="system-ui" font-weight="800">3</text><text x="18" y="106" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="700">Route State</text><text x="302" y="106" text-anchor="end" fill="#22c55e" font-size="12" font-family="system-ui" font-weight="800">Active</text></svg>`
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 128"><rect x="1" y="1" width="318" height="126" rx="14" fill="#0f172a" stroke="#334155" stroke-width="2"/><rect x="7" y="7" width="306" height="24" rx="8" fill="#1d4ed833" stroke="#60a5fa55"/><rect x="7" y="7" width="7" height="24" rx="4" fill="#22c55e"/><text x="22" y="23" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="800">Route Display</text><rect x="7" y="35" width="306" height="60" rx="9" fill="#0f172acc" stroke="#334155"/><text x="17" y="52" fill="#94a3b8" font-size="10" font-family="system-ui" font-weight="700">Job Number</text><text x="301" y="52" text-anchor="end" fill="#e2e8f0" font-size="11" font-family="system-ui" font-weight="800">120</text><line x1="15" y1="60" x2="305" y2="60" stroke="#334155"/><text x="17" y="70" fill="#94a3b8" font-size="10" font-family="system-ui" font-weight="700">Job Step</text><text x="301" y="70" text-anchor="end" fill="#e2e8f0" font-size="11" font-family="system-ui" font-weight="800">3</text><line x1="15" y1="78" x2="305" y2="78" stroke="#334155"/><text x="17" y="88" fill="#94a3b8" font-size="10" font-family="system-ui" font-weight="700">Route State</text><text x="301" y="88" text-anchor="end" fill="#22c55e" font-size="11" font-family="system-ui" font-weight="800">Active</text><rect x="7" y="100" width="148" height="21" rx="7" fill="#b45309"/><text x="81" y="114" text-anchor="middle" fill="#ffffff" font-size="10" font-family="system-ui" font-weight="800">Pause</text><rect x="165" y="100" width="148" height="21" rx="7" fill="#15803d"/><text x="239" y="114" text-anchor="middle" fill="#ffffff" font-size="10" font-family="system-ui" font-weight="800">Continue</text></svg>`
       },
       scaleAdapter: {
         name: "Widget-ScaleAdapter.svg",
@@ -418,6 +457,10 @@ var MesoraDrawingToolBundle = (() => {
       opcServer: DEFAULT_WIDGET_OPC_SERVER,
       viewPath: "",
       viewParamsJson: "{}",
+      scriptPath: "",
+      scriptProject: "",
+      scriptArgsJson: "[]",
+      scriptKwargsJson: "{}",
       writeValue: 1,
       releaseValue: 0,
       onValue: 1,
@@ -455,7 +498,7 @@ var MesoraDrawingToolBundle = (() => {
     if (kind === "statusTable") return { ...base, historyPoints: 12, rowCount: 6 };
     if (kind === "kpi") return { ...base, historyPoints: 10 };
     if (kind === "displayBox") return { ...base, historyPoints: 10 };
-    if (kind === "routeDisplay") return { ...base, title: "Route Display", historyPoints: 10 };
+    if (kind === "routeDisplay") return { ...base, title: "Route Display", writeMode: "opc", historyPoints: 10 };
     if (kind === "scaleAdapter" || kind === "scaleAdaptor") return { ...base, kind: "scaleAdapter", title: "Scale Adapter", historyPoints: 10, decimals: 4 };
     if (kind === "weather") return { ...base, historyPoints: 10, decimals: 1, unit: "F" };
     if (kind === "countdownBar") return { ...base, historyPoints: 10, decimals: 1 };
@@ -13854,6 +13897,7 @@ var MesoraDrawingToolBundle = (() => {
     ignitionTagValuesByPath,
     writeIgnitionTagValue = null,
     writeIgnitionOpcValue = null,
+    callGatewayScript = null,
     liveTagKeys,
     opcTags,
     opcTemplateMap,
@@ -15481,7 +15525,8 @@ var MesoraDrawingToolBundle = (() => {
       return false;
     };
     const getWritableWidgetTagPath = (overlay) => {
-      if (resolveWidgetWriteMode(overlay == null ? void 0 : overlay.widget, overlay == null ? void 0 : overlay.tagPath) === "view") return "";
+      const writeMode = resolveWidgetWriteMode(overlay == null ? void 0 : overlay.widget, overlay == null ? void 0 : overlay.tagPath);
+      if (writeMode === "view" || writeMode === "script") return "";
       const tagPath = String((overlay == null ? void 0 : overlay.tagPath) || "").trim();
       if (!tagPath) return "";
       const lower = tagPath.toLowerCase();
@@ -15553,14 +15598,51 @@ var MesoraDrawingToolBundle = (() => {
       position.top = Math.max(12, Math.round((viewportHeight - heightForCenter) / 2));
       return position;
     };
+    const getWidgetGatewayScriptPath = (overlay) => {
+      var _a2, _b, _c, _d, _e, _f;
+      return String(
+        (_f = (_e = (_c = (_a2 = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a2.scriptPath) != null ? _c : (_b = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _b.gatewayScriptPath) != null ? _e : (_d = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _d.projectScriptPath) != null ? _f : ""
+      ).trim();
+    };
+    const getWidgetGatewayScriptProject = (overlay) => {
+      var _a2, _b, _c, _d, _e, _f;
+      return String(
+        (_f = (_e = (_c = (_a2 = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a2.scriptProject) != null ? _c : (_b = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _b.gatewayScriptProject) != null ? _e : (_d = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _d.projectName) != null ? _f : ""
+      ).trim();
+    };
+    const parseWidgetGatewayScriptArgs = (overlay) => {
+      var _a2, _b, _c, _d;
+      const raw = String(
+        (_d = (_c = (_a2 = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a2.scriptArgsJson) != null ? _c : (_b = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _b.argsJson) != null ? _d : "[]"
+      ).trim();
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        throw new Error("Script args must be a JSON array.");
+      }
+      return parsed;
+    };
+    const parseWidgetGatewayScriptKwargs = (overlay) => {
+      var _a2, _b, _c, _d;
+      const raw = String(
+        (_d = (_c = (_a2 = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a2.scriptKwargsJson) != null ? _c : (_b = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _b.kwargsJson) != null ? _d : "{}"
+      ).trim();
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Script kwargs must be a JSON object.");
+      }
+      return parsed;
+    };
     const getMissingWidgetWriteTargetMessage = (overlay) => {
       const writeMode = resolveWidgetWriteMode(overlay == null ? void 0 : overlay.widget, overlay == null ? void 0 : overlay.tagPath);
       if (writeMode === "view") return "Configure view path to open.";
+      if (writeMode === "script") return "Configure Gateway Script path to call.";
       return writeMode === "opc" ? "Configure OPC item path to enable write." : "Configure Ignition tag path to enable write.";
     };
     const getWidgetOptimisticWriteKeys = useCallback(
-      (overlay) => {
-        const tagPath = normalizeTagValue(getWritableWidgetTagPath(overlay));
+      (overlay, overrideTagPath = "") => {
+        const tagPath = normalizeTagValue(overrideTagPath || getWritableWidgetTagPath(overlay));
         if (!tagPath) return [];
         const out = [];
         const seen = /* @__PURE__ */ new Set();
@@ -15596,8 +15678,8 @@ var MesoraDrawingToolBundle = (() => {
       [watchedLiveKeys]
     );
     const applyOptimisticWidgetWrite = useCallback(
-      (overlay, nextValue) => {
-        const keys = getWidgetOptimisticWriteKeys(overlay);
+      (overlay, nextValue, overrideTagPath = "") => {
+        const keys = getWidgetOptimisticWriteKeys(overlay, overrideTagPath);
         if (!keys.length) return;
         const patch = {};
         keys.forEach((rawKey) => {
@@ -15635,23 +15717,46 @@ var MesoraDrawingToolBundle = (() => {
       const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
       const tagPath = getWritableWidgetTagPath(overlay);
       if (!overlayId || !tagPath) return;
+      await submitWidgetWriteToTag(overlay, tagPath, writeValue);
+    };
+    const submitWidgetWriteToTag = async (overlay, targetTagPath, writeValue, options = {}) => {
+      const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
+      const tagPath = String(targetTagPath || "").trim();
+      if (!overlayId || !tagPath) return;
       const payloadValue = coerceWidgetWriteValue(writeValue);
-      const writeMode = resolveWidgetWriteMode(overlay == null ? void 0 : overlay.widget, tagPath);
+      const requestedMode = String((options == null ? void 0 : options.writeMode) || "").trim().toLowerCase();
+      const writeMode = requestedMode === "opc" || requestedMode === "ignition" ? requestedMode : resolveWidgetWriteMode(overlay == null ? void 0 : overlay.widget, tagPath);
       const isIgnitionTarget = writeMode === "ignition";
       const isDirectOpcTarget = writeMode === "opc";
       const opcServerName = resolveWidgetOpcServer(overlay == null ? void 0 : overlay.widget);
+      const pulse = (options == null ? void 0 : options.pulse) === true;
+      const pulseDelayMs = Math.max(80, Number(options == null ? void 0 : options.pulseDelayMs) || 170);
+      const pulseResetValue = Object.prototype.hasOwnProperty.call(options || {}, "pulseResetValue") ? coerceWidgetWriteValue(options.pulseResetValue) : false;
+      const writeOne = async (nextWriteValue) => {
+        const data = isIgnitionTarget && typeof writeIgnitionTagValue === "function" ? await writeIgnitionTagValue(tagPath, nextWriteValue) : isDirectOpcTarget && typeof writeIgnitionOpcValue === "function" ? await writeIgnitionOpcValue(tagPath, nextWriteValue, opcServerName) : await writeOpcValue({
+          tagKey: tagPath,
+          legacyTagKey: tagPath,
+          value: nextWriteValue
+        });
+        const nextValue = Object.prototype.hasOwnProperty.call(data || {}, "value") ? data.value : nextWriteValue;
+        if (!isIgnitionTarget) {
+          applyOptimisticWidgetWrite(overlay, nextValue, tagPath);
+        }
+        return nextValue;
+      };
       const runWrite = async () => {
         setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: true }));
         setWidgetWriteErrorByOverlay((prev) => ({ ...prev, [overlayId]: "" }));
         try {
-          const data = isIgnitionTarget && typeof writeIgnitionTagValue === "function" ? await writeIgnitionTagValue(tagPath, payloadValue) : isDirectOpcTarget && typeof writeIgnitionOpcValue === "function" ? await writeIgnitionOpcValue(tagPath, payloadValue, opcServerName) : await writeOpcValue({
-            tagKey: tagPath,
-            legacyTagKey: tagPath,
-            value: payloadValue
-          });
-          const nextValue = Object.prototype.hasOwnProperty.call(data || {}, "value") ? data.value : payloadValue;
-          if (!isIgnitionTarget) {
-            applyOptimisticWidgetWrite(overlay, nextValue);
+          const nextValue = await writeOne(payloadValue);
+          if (pulse) {
+            const timeoutFn = typeof window !== "undefined" && typeof window.setTimeout === "function" ? window.setTimeout : setTimeout;
+            timeoutFn(async () => {
+              try {
+                await writeOne(pulseResetValue);
+              } catch {
+              }
+            }, pulseDelayMs);
           }
           setWidgetWriteDraftByOverlay((prev) => ({
             ...prev,
@@ -15676,6 +15781,32 @@ var MesoraDrawingToolBundle = (() => {
           widgetWriteChainRef.current.delete(overlayId);
         }
       }
+    };
+    const getRouteCommandOpcItemPath = (routeTagPath, commandName) => {
+      const base = String(routeTagPath || "").trim().replace(/^\[[^\]]+\]/, "").replace(/[\\/]+/g, ".").replace(/[.]+/g, ".").replace(/^[.]+|[.]+$/g, "");
+      const command = String(commandName || "").trim();
+      if (!base || !command) return "";
+      return `${base}.HMI_Write.Cmd.${command}`;
+    };
+    const submitRouteDisplayCommand = (overlay, commandName) => {
+      const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
+      const routeTagPath = String((overlay == null ? void 0 : overlay.tagPath) || "").trim();
+      const commandOpcItemPath = getRouteCommandOpcItemPath(routeTagPath, commandName);
+      if (!overlayId || !commandOpcItemPath) {
+        if (overlayId) {
+          setWidgetWriteErrorByOverlay((prev) => ({
+            ...prev,
+            [overlayId]: "Bind parent route tag to enable commands."
+          }));
+        }
+        return;
+      }
+      submitWidgetWriteToTag(overlay, commandOpcItemPath, true, {
+        writeMode: "opc",
+        pulse: true,
+        pulseResetValue: false,
+        pulseDelayMs: 180
+      });
     };
     const parseDbBinding = (rawTagPath) => {
       const tagPath = String(rawTagPath || "").trim();
@@ -16380,7 +16511,7 @@ var MesoraDrawingToolBundle = (() => {
       const seriesTags = parseWidgetSeriesTags(overlay);
       const primaryTagPath = String(seriesTags[0] || "").trim();
       const label = formatWidgetSourceLabel(primaryTagPath || String((overlay == null ? void 0 : overlay.tagPath) || "").trim()) || "Unbound";
-      const bb = (overlay == null ? void 0 : overlay.bbox) || { x: 0, y: 0, width: 320, height: 180 };
+      const bb = getWidgetVisualBBox(overlay, (overlay == null ? void 0 : overlay.bbox) || { x: 0, y: 0, width: 320, height: 180 });
       const x = Number(bb.x) || 0;
       const y = Number(bb.y) || 0;
       const w = Math.max(80, Number(bb.width) || 320);
@@ -16722,29 +16853,76 @@ var MesoraDrawingToolBundle = (() => {
         const panelFill = isDarkTheme ? "rgba(15, 23, 42, 0.72)" : "rgba(255, 255, 255, 0.82)";
         const headerFill = isDarkTheme ? "rgba(37, 99, 235, 0.30)" : "rgba(37, 99, 235, 0.12)";
         const headerStroke = isDarkTheme ? "rgba(96, 165, 250, 0.32)" : "rgba(37, 99, 235, 0.22)";
-        const routePad = Math.max(7, Math.min(12, Math.round(Math.min(w, h) * 0.065)));
-        const innerGap = Math.max(4, Math.min(7, Math.round(routePad * 0.6)));
-        const footerH2 = 0;
+        const routePad = Math.max(4, Math.min(7, Math.round(Math.min(w, h) * 0.045)));
+        const innerGap = Math.max(3, Math.min(5, Math.round(routePad * 0.65)));
+        const showRouteCommands = h >= 96;
+        const commandH = showRouteCommands ? Math.max(18, Math.min(22, Math.round(h * 0.15))) : 0;
+        const footerH2 = showRouteCommands ? commandH + innerGap : 0;
         const usableH = Math.max(48, h - routePad * 2 - innerGap - footerH2);
-        const routeHeadH = Math.max(22, Math.min(30, Math.round(usableH * 0.28)));
+        const routeHeadH = Math.max(20, Math.min(26, Math.round(usableH * 0.28)));
         const headerX = x + routePad;
         const headerY = y + routePad;
         const headerW = Math.max(20, w - routePad * 2);
         const bodyX = headerX;
         const bodyY = headerY + routeHeadH + innerGap;
         const bodyW = Math.max(20, w - routePad * 2);
-        const bodyBottom = y + h - routePad - footerH2;
+        const maxCommandY = showRouteCommands ? y + h - routePad - commandH : 0;
+        const bodyBottom = showRouteCommands ? maxCommandY - innerGap : y + h - routePad;
         const bodyAvailableH = Math.max(42, bodyBottom - bodyY);
-        const rowStep = Math.max(16, Math.min(22, bodyAvailableH / Math.max(1, rows.length)));
-        const bodyH = Math.max(42, Math.min(bodyAvailableH, rowStep * rows.length));
-        const bodyTop = bodyY + rowStep * 0.5;
-        const routeCardH = Math.max(1, Math.min(h - 2, routePad * 2 + routeHeadH + innerGap + bodyH));
         const labelFont = Math.max(8, Math.min(12, Math.round(w / 28)));
         const valueFont = Math.max(9, Math.min(14, Math.round(w / 25)));
+        const compactRowStep = Math.max(16, Math.min(22, Math.round(Math.max(labelFont, valueFont) * 1.7)));
+        const rowStep = Math.max(14, Math.min(bodyAvailableH / Math.max(1, rows.length), compactRowStep));
+        const bodyH = Math.max(42, Math.min(bodyAvailableH, rowStep * rows.length));
+        const bodyTop = bodyY + rowStep * 0.5;
+        const commandY = showRouteCommands ? bodyY + bodyH + innerGap : 0;
+        const routeContentBottom = showRouteCommands ? commandY + commandH : bodyY + bodyH;
+        const routeCardH = Math.max(1, Math.min(h - 2, routeContentBottom - y + routePad - 1));
         const maxTitleChars = Math.max(8, Math.floor((headerW - routePad * 2 - 10) / 7));
         const maxValueChars = Math.max(6, Math.floor(w * 0.48 / Math.max(6, valueFont * 0.58)));
         const rowBaselineOffset = Math.max(3, Math.min(5, valueFont * 0.34));
-        return /* @__PURE__ */ jsxs("g", { pointerEvents: "none", children: [
+        const routeWriteBusy = (widgetWriteBusyByOverlay == null ? void 0 : widgetWriteBusyByOverlay[overlayId]) === true;
+        const routeWriteError = String((widgetWriteErrorByOverlay == null ? void 0 : widgetWriteErrorByOverlay[overlayId]) || "");
+        const routeCommandsEnabled = Boolean(routeTagPath) && !routeWriteBusy;
+        const commandGap = Math.max(4, Math.min(6, Math.round(bodyW * 0.03)));
+        const commandButtonW = Math.max(24, (bodyW - commandGap) / 2);
+        const routeCommandButtonBase = {
+          width: "100%",
+          height: "100%",
+          borderRadius: 8,
+          color: widgetButtonTextColor,
+          fontSize: dense ? 9 : 10,
+          fontWeight: 850,
+          letterSpacing: "0.01em",
+          border: "1px solid rgba(255,255,255,0.16)",
+          boxSizing: "border-box",
+          cursor: widgetInteractionEnabled && routeCommandsEnabled ? "pointer" : widgetSurfaceCursor,
+          opacity: routeCommandsEnabled ? 1 : 0.62
+        };
+        const stopRouteCommandEvent = (event) => {
+          var _a3, _b2;
+          (_a3 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a3.call(event);
+          (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
+        };
+        const stopRouteCommandPointerEvent = (event) => {
+          var _a3;
+          (_a3 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _a3.call(event);
+        };
+        const routeCommandButtons = [
+          {
+            key: "pause",
+            label: "Pause",
+            command: "CmdPause",
+            background: "linear-gradient(180deg, #f59e0b 0%, #b45309 100%)"
+          },
+          {
+            key: "continue",
+            label: "Continue",
+            command: "CmdContinue",
+            background: "linear-gradient(180deg, #22c55e 0%, #15803d 100%)"
+          }
+        ];
+        return /* @__PURE__ */ jsxs("g", { children: [
           /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: routeCardH, rx: 14, fill: cardFill, stroke: widgetBorderColor }),
           /* @__PURE__ */ jsx("rect", { x: headerX, y: headerY, width: headerW, height: routeHeadH, rx: 10, fill: headerFill, stroke: headerStroke }),
           /* @__PURE__ */ jsx("rect", { x: headerX, y: headerY, width: Math.max(5, Math.min(9, routePad - 2)), height: routeHeadH, rx: 5, fill: stateTone }),
@@ -16780,7 +16958,55 @@ var MesoraDrawingToolBundle = (() => {
                 }
               )
             ] }, `route-display-${overlayId}-${labelText}`);
-          })
+          }),
+          showRouteCommands ? /* @__PURE__ */ jsx(
+            "foreignObject",
+            {
+              x: bodyX,
+              y: commandY,
+              width: bodyW,
+              height: commandH,
+              style: { pointerEvents: widgetInteractionEnabled ? "auto" : "none" },
+              children: /* @__PURE__ */ jsx(
+                "div",
+                {
+                  xmlns: "http://www.w3.org/1999/xhtml",
+                  onDoubleClickCapture: openWidgetProperties,
+                  style: {
+                    display: "grid",
+                    gridTemplateColumns: `${commandButtonW}px ${commandButtonW}px`,
+                    gap: commandGap,
+                    width: "100%",
+                    height: "100%",
+                    pointerEvents: widgetInteractionEnabled ? "auto" : "none",
+                    cursor: widgetSurfaceCursor
+                  },
+                  children: routeCommandButtons.map((button) => /* @__PURE__ */ jsx(
+                    "button",
+                    {
+                      "data-widget-control": widgetInteractionEnabled ? "true" : void 0,
+                      onPointerDown: stopRouteCommandPointerEvent,
+                      onMouseDown: stopRouteCommandPointerEvent,
+                      onDoubleClick: openWidgetProperties,
+                      onClick: (event) => {
+                        stopRouteCommandEvent(event);
+                        if (!widgetInteractionEnabled || !routeCommandsEnabled) return;
+                        submitRouteDisplayCommand(overlay, button.command);
+                      },
+                      disabled: !widgetInteractionEnabled || !routeCommandsEnabled,
+                      style: {
+                        ...routeCommandButtonBase,
+                        background: button.background
+                      },
+                      children: routeWriteBusy ? "..." : button.label
+                    },
+                    `route-command-${overlayId}-${button.key}`
+                  ))
+                }
+              )
+            }
+          ) : null,
+          routeWriteError && showRouteCommands ? /* @__PURE__ */ jsx("text", { x: bodyX + 3, y: commandY - 2, fill: "#ef4444", fontSize: 8, fontFamily: "system-ui", fontWeight: 800, children: truncateRouteDisplayText(routeWriteError, Math.max(12, Math.floor(bodyW / 6))) }) : null
         ] });
       }
       ;
@@ -17256,8 +17482,10 @@ var MesoraDrawingToolBundle = (() => {
       if (kind === "pushButton") {
         const writeMode = resolveWidgetWriteMode(overlay == null ? void 0 : overlay.widget, overlay == null ? void 0 : overlay.tagPath);
         const opensView = writeMode === "view";
+        const isGatewayScript = writeMode === "script";
+        const gatewayScriptPath = getWidgetGatewayScriptPath(overlay);
         const tagPath = getWritableWidgetTagPath(overlay);
-        const canWrite = opensView ? Boolean(getWidgetOpenViewPath(overlay)) : Boolean(tagPath);
+        const canWrite = opensView ? Boolean(getWidgetOpenViewPath(overlay)) : isGatewayScript ? Boolean(gatewayScriptPath) : Boolean(tagPath);
         const writeBusy = (widgetWriteBusyByOverlay == null ? void 0 : widgetWriteBusyByOverlay[overlayId]) === true;
         const writeError = String((widgetWriteErrorByOverlay == null ? void 0 : widgetWriteErrorByOverlay[overlayId]) || "");
         const pressValue = Object.prototype.hasOwnProperty.call(cfg || {}, "writeValue") ? cfg.writeValue : 1;
@@ -17281,6 +17509,29 @@ var MesoraDrawingToolBundle = (() => {
         const buttonH = Math.max(18, Math.round(y + h - bottomInset - contentTop));
         const buttonX = x + contentPadX;
         const buttonY = contentTop;
+        const submitPrimaryAction = () => {
+          if (opensView) {
+            submitWidgetOpenView(overlay);
+            return;
+          }
+          if (writeBusy) return;
+          if (!canWrite) {
+            setWidgetWriteErrorByOverlay((prev) => ({
+              ...prev,
+              [overlayId]: getMissingWidgetWriteTargetMessage(overlay)
+            }));
+            return;
+          }
+          if (isGatewayScript) {
+            submitWidgetGatewayScript(overlay);
+            return;
+          }
+          submitWidgetWrite(overlay, pressValue);
+        };
+        const submitReleaseAction = () => {
+          if (opensView || isGatewayScript || writeBusy || !canWrite) return;
+          submitWidgetWrite(overlay, releaseValue);
+        };
         return /* @__PURE__ */ jsxs("g", { children: [
           showTitle ? /* @__PURE__ */ jsx(
             "text",
@@ -17317,56 +17568,29 @@ var MesoraDrawingToolBundle = (() => {
                         if (!widgetInteractionEnabled) return;
                         e.stopPropagation();
                         setWidgetPressed(overlayId, true);
-                        if (opensView) {
-                          submitWidgetOpenView(overlay);
-                          return;
-                        }
-                        if (writeBusy) return;
-                        if (!canWrite) {
-                          setWidgetWriteErrorByOverlay((prev) => ({
-                            ...prev,
-                            [overlayId]: getMissingWidgetWriteTargetMessage(overlay)
-                          }));
-                          return;
-                        }
-                        submitWidgetWrite(overlay, pressValue);
+                        submitPrimaryAction();
                       },
                       onMouseUp: (e) => {
                         if (!widgetInteractionEnabled) return;
                         e.stopPropagation();
                         setWidgetPressed(overlayId, false);
-                        if (opensView || writeBusy || !canWrite) return;
-                        submitWidgetWrite(overlay, releaseValue);
+                        submitReleaseAction();
                       },
                       onMouseLeave: () => {
                         if (!widgetInteractionEnabled) return;
                         setWidgetPressed(overlayId, false);
-                        if (opensView || writeBusy || !canWrite) return;
-                        submitWidgetWrite(overlay, releaseValue);
+                        submitReleaseAction();
                       },
                       onTouchStart: (e) => {
                         if (!widgetInteractionEnabled) return;
                         e.stopPropagation();
                         setWidgetPressed(overlayId, true);
-                        if (opensView) {
-                          submitWidgetOpenView(overlay);
-                          return;
-                        }
-                        if (writeBusy) return;
-                        if (!canWrite) {
-                          setWidgetWriteErrorByOverlay((prev) => ({
-                            ...prev,
-                            [overlayId]: getMissingWidgetWriteTargetMessage(overlay)
-                          }));
-                          return;
-                        }
-                        submitWidgetWrite(overlay, pressValue);
+                        submitPrimaryAction();
                       },
                       onTouchEnd: () => {
                         if (!widgetInteractionEnabled) return;
                         setWidgetPressed(overlayId, false);
-                        if (opensView || writeBusy || !canWrite) return;
-                        submitWidgetWrite(overlay, releaseValue);
+                        submitReleaseAction();
                       },
                       disabled: !widgetInteractionEnabled || writeBusy,
                       style: {
@@ -17401,7 +17625,7 @@ var MesoraDrawingToolBundle = (() => {
                             color: widgetButtonTextColor,
                             whiteSpace: "nowrap"
                           },
-                          children: opensView ? "Open" : writeBusy ? "Writing..." : visualPressed ? "Pressed" : "Press"
+                          children: opensView ? "Open" : isGatewayScript ? writeBusy ? "Calling..." : "Run" : writeBusy ? "Writing..." : visualPressed ? "Pressed" : "Press"
                         }
                       )
                     }
@@ -17425,30 +17649,16 @@ var MesoraDrawingToolBundle = (() => {
               onMouseDown: (e) => {
                 e.stopPropagation();
                 setWidgetPressed(overlayId, true);
-                if (opensView) {
-                  submitWidgetOpenView(overlay);
-                  return;
-                }
-                if (writeBusy) return;
-                if (!canWrite) {
-                  setWidgetWriteErrorByOverlay((prev) => ({
-                    ...prev,
-                    [overlayId]: getMissingWidgetWriteTargetMessage(overlay)
-                  }));
-                  return;
-                }
-                submitWidgetWrite(overlay, pressValue);
+                submitPrimaryAction();
               },
               onMouseUp: (e) => {
                 e.stopPropagation();
                 setWidgetPressed(overlayId, false);
-                if (opensView || writeBusy || !canWrite) return;
-                submitWidgetWrite(overlay, releaseValue);
+                submitReleaseAction();
               },
               onMouseLeave: () => {
                 setWidgetPressed(overlayId, false);
-                if (opensView || writeBusy || !canWrite) return;
-                submitWidgetWrite(overlay, releaseValue);
+                submitReleaseAction();
               }
             }
           ) : null,
@@ -17458,8 +17668,10 @@ var MesoraDrawingToolBundle = (() => {
       if (kind === "onOffButton") {
         const writeMode = resolveWidgetWriteMode(overlay == null ? void 0 : overlay.widget, overlay == null ? void 0 : overlay.tagPath);
         const opensView = writeMode === "view";
+        const isGatewayScript = writeMode === "script";
+        const gatewayScriptPath = getWidgetGatewayScriptPath(overlay);
         const tagPath = getWritableWidgetTagPath(overlay);
-        const canWrite = opensView ? Boolean(getWidgetOpenViewPath(overlay)) : Boolean(tagPath);
+        const canWrite = opensView ? Boolean(getWidgetOpenViewPath(overlay)) : isGatewayScript ? Boolean(gatewayScriptPath) : Boolean(tagPath);
         const writeBusy = (widgetWriteBusyByOverlay == null ? void 0 : widgetWriteBusyByOverlay[overlayId]) === true;
         const writeError = String((widgetWriteErrorByOverlay == null ? void 0 : widgetWriteErrorByOverlay[overlayId]) || "");
         const isOn = toBooleanLike(rawVal);
@@ -17480,6 +17692,25 @@ var MesoraDrawingToolBundle = (() => {
         const buttonH = Math.max(28, Math.round(y + h - bottomInset - contentTop));
         const buttonX = x + contentPadX;
         const buttonY = contentTop;
+        const submitToggleAction = () => {
+          if (opensView) {
+            submitWidgetOpenView(overlay);
+            return;
+          }
+          if (writeBusy) return;
+          if (!canWrite) {
+            setWidgetWriteErrorByOverlay((prev) => ({
+              ...prev,
+              [overlayId]: getMissingWidgetWriteTargetMessage(overlay)
+            }));
+            return;
+          }
+          if (isGatewayScript) {
+            submitWidgetGatewayScript(overlay);
+            return;
+          }
+          submitWidgetWrite(overlay, isOn ? 0 : 1);
+        };
         return /* @__PURE__ */ jsxs("g", { children: [
           showTitle ? /* @__PURE__ */ jsx(
             "text",
@@ -17523,19 +17754,7 @@ var MesoraDrawingToolBundle = (() => {
                         if (!widgetInteractionEnabled) return;
                         e.stopPropagation();
                         pulseWidgetPress(overlayId, 180);
-                        if (opensView) {
-                          submitWidgetOpenView(overlay);
-                          return;
-                        }
-                        if (writeBusy) return;
-                        if (!canWrite) {
-                          setWidgetWriteErrorByOverlay((prev) => ({
-                            ...prev,
-                            [overlayId]: getMissingWidgetWriteTargetMessage(overlay)
-                          }));
-                          return;
-                        }
-                        submitWidgetWrite(overlay, isOn ? 0 : 1);
+                        submitToggleAction();
                       },
                       disabled: !widgetInteractionEnabled || writeBusy,
                       style: {
@@ -17629,19 +17848,7 @@ var MesoraDrawingToolBundle = (() => {
               onClick: (e) => {
                 e.stopPropagation();
                 pulseWidgetPress(overlayId, 180);
-                if (opensView) {
-                  submitWidgetOpenView(overlay);
-                  return;
-                }
-                if (writeBusy) return;
-                if (!canWrite) {
-                  setWidgetWriteErrorByOverlay((prev) => ({
-                    ...prev,
-                    [overlayId]: getMissingWidgetWriteTargetMessage(overlay)
-                  }));
-                  return;
-                }
-                submitWidgetWrite(overlay, isOn ? 0 : 1);
+                submitToggleAction();
               }
             }
           ) : null,
@@ -18511,6 +18718,47 @@ var MesoraDrawingToolBundle = (() => {
           [overlayId]: (err == null ? void 0 : err.message) || "Failed to open view."
         }));
         return false;
+      }
+    };
+    const submitWidgetGatewayScript = async (overlay) => {
+      const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
+      if (!overlayId) return false;
+      const scriptPath = getWidgetGatewayScriptPath(overlay);
+      if (!scriptPath) {
+        setWidgetWriteErrorByOverlay((prev) => ({
+          ...prev,
+          [overlayId]: getMissingWidgetWriteTargetMessage(overlay)
+        }));
+        return false;
+      }
+      const scriptCaller = typeof callGatewayScript === "function" ? callGatewayScript : typeof globalThis !== "undefined" && typeof globalThis.viziCallGatewayScript === "function" ? globalThis.viziCallGatewayScript : null;
+      if (typeof scriptCaller !== "function") {
+        setWidgetWriteErrorByOverlay((prev) => ({
+          ...prev,
+          [overlayId]: "Gateway script API is not available."
+        }));
+        return false;
+      }
+      setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: true }));
+      setWidgetWriteErrorByOverlay((prev) => ({ ...prev, [overlayId]: "" }));
+      try {
+        const project = getWidgetGatewayScriptProject(overlay);
+        const args = parseWidgetGatewayScriptArgs(overlay);
+        const kwargs = parseWidgetGatewayScriptKwargs(overlay);
+        const payload = {};
+        if (project) payload.project = project;
+        if (args.length) payload.args = args;
+        if (Object.keys(kwargs).length) payload.kwargs = kwargs;
+        await scriptCaller(scriptPath, payload);
+        return true;
+      } catch (err) {
+        setWidgetWriteErrorByOverlay((prev) => ({
+          ...prev,
+          [overlayId]: (err == null ? void 0 : err.message) || "Gateway script call failed."
+        }));
+        return false;
+      } finally {
+        setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: false }));
       }
     };
     const getLiveValueForExactOrSuffixKey = (rawKey) => {
@@ -23075,7 +23323,7 @@ var MesoraDrawingToolBundle = (() => {
         const overlayVisual = overlayVisualById.get(String((o == null ? void 0 : o.id) || "").trim());
         const overlayWidgetKind = String(((_a2 = o == null ? void 0 : o.widget) == null ? void 0 : _a2.kind) || "");
         const overlayCursor = isPassiveReadoutWidgetKind(overlayWidgetKind) ? "default" : isLiveMode ? widgetInteractionEnabled ? "pointer" : "default" : tool === "select" ? "move" : "crosshair";
-        const widgetBounds = (o == null ? void 0 : o.bbox) || { x: 0, y: 0, width: 320, height: 180 };
+        const widgetBounds = getWidgetVisualBBox(o, (o == null ? void 0 : o.bbox) || { x: 0, y: 0, width: 320, height: 180 });
         const showDesignWidgetHitbox = !isLiveMode;
         return /* @__PURE__ */ jsx(
           "g",
@@ -25881,6 +26129,16 @@ var MesoraDrawingToolBundle = (() => {
     `/data/${MODULE_ID}/opc-write`,
     `/main/data/${MODULE_ID}/opc-write`
   ];
+  var MODULE_GATEWAY_SCRIPT_CALL_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/gateway-script-call/`,
+    `/data/${MODULE_URL_ALIAS}/gateway-script-call`,
+    `/main/data/${MODULE_URL_ALIAS}/gateway-script-call/`,
+    `/main/data/${MODULE_URL_ALIAS}/gateway-script-call`,
+    `/data/${MODULE_ID}/gateway-script-call/`,
+    `/data/${MODULE_ID}/gateway-script-call`,
+    `/main/data/${MODULE_ID}/gateway-script-call/`,
+    `/main/data/${MODULE_ID}/gateway-script-call`
+  ];
   var SVG_LIBRARY_CATALOG_ROUTE_CANDIDATES = [
     `/data/${MODULE_URL_ALIAS}/svg-library-catalog`,
     `/main/data/${MODULE_URL_ALIAS}/svg-library-catalog`,
@@ -25965,7 +26223,7 @@ var MesoraDrawingToolBundle = (() => {
       title: "Getting Started",
       items: Object.freeze([
         "Use Move to select, drag, resize, rotate, flip, and edit items on the canvas.",
-        "Use Polyline to draw process flow. Left click adds segments, right click removes the current segment, and double click or Enter finishes the line.",
+        "Use Polyline to draw process flow. Left click adds segments, Shift+left click, double click, Enter, or Return finishes the line. Right click removes the current segment.",
         "Use Text to place a label or a live tag readout. Text can bind directly to an Ignition tag path.",
         "The toolbar stays visible while scrolling. Drag it to a better spot, or use Dock to return it to the default position."
       ])
@@ -28945,6 +29203,78 @@ var MesoraDrawingToolBundle = (() => {
     const nestedProps = getComponentPropSource(props);
     return ((_c = (_b = (_a = props == null ? void 0 : props.store) == null ? void 0 : _a.view) == null ? void 0 : _b.page) == null ? void 0 : _c.parent) || ((_f = (_e = (_d = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _d.view) == null ? void 0 : _e.page) == null ? void 0 : _f.parent) || ((_h = (_g = props == null ? void 0 : props.store) == null ? void 0 : _g.page) == null ? void 0 : _h.parent) || ((_j = (_i = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _i.page) == null ? void 0 : _j.parent) || (typeof window !== "undefined" ? window.__client : null) || (typeof window !== "undefined" ? (_m = (_l = (_k = window._perspective_designer) == null ? void 0 : _k.store) == null ? void 0 : _l.page) == null ? void 0 : _m.parent : null) || null;
   }
+  function normalizePerspectiveProjectName(value) {
+    var _a, _b, _c;
+    if (value == null) {
+      return "";
+    }
+    if (isPlainObject(value)) {
+      return normalizePerspectiveProjectName(
+        (_c = (_b = (_a = value.name) != null ? _a : value.project) != null ? _b : value.projectName) != null ? _c : value.value
+      );
+    }
+    const text = String(value || "").trim();
+    if (!text || text === "[object Object]") {
+      return "";
+    }
+    try {
+      return decodeURIComponent(text);
+    } catch (_error) {
+      return text;
+    }
+  }
+  function readPerspectiveProjectFromUrl() {
+    if (typeof window === "undefined" || !window.location) {
+      return "";
+    }
+    const parts = String(window.location.pathname || "").split("/").map((part) => part.trim()).filter(Boolean);
+    for (let index2 = 0; index2 < parts.length - 2; index2 += 1) {
+      if (parts[index2].toLowerCase() === "perspective" && parts[index2 + 1].toLowerCase() === "client") {
+        return normalizePerspectiveProjectName(parts[index2 + 2]);
+      }
+    }
+    return "";
+  }
+  function resolvePerspectiveProjectName(componentProps, clientStore = null) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B;
+    const nestedProps = getComponentPropSource(componentProps);
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+    const candidates = [
+      componentProps == null ? void 0 : componentProps.projectName,
+      componentProps == null ? void 0 : componentProps.project,
+      nestedProps == null ? void 0 : nestedProps.projectName,
+      nestedProps == null ? void 0 : nestedProps.project,
+      (_a = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _a.projectName,
+      (_b = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _b.project,
+      (_c = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _c.projectName,
+      (_d = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _d.project,
+      (_f = (_e = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _e.view) == null ? void 0 : _f.project,
+      (_h = (_g = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _g.view) == null ? void 0 : _h.projectName,
+      (_k = (_j = (_i = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _i.view) == null ? void 0 : _j.page) == null ? void 0 : _k.project,
+      (_n = (_m = (_l = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _l.view) == null ? void 0 : _m.page) == null ? void 0 : _n.projectName,
+      (_p = (_o = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _o.page) == null ? void 0 : _p.project,
+      (_r = (_q = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _q.page) == null ? void 0 : _r.projectName,
+      clientStore == null ? void 0 : clientStore.project,
+      clientStore == null ? void 0 : clientStore.projectName,
+      (_s = clientStore == null ? void 0 : clientStore.page) == null ? void 0 : _s.project,
+      (_t = clientStore == null ? void 0 : clientStore.page) == null ? void 0 : _t.projectName,
+      (_u = clientStore == null ? void 0 : clientStore.view) == null ? void 0 : _u.project,
+      (_v = clientStore == null ? void 0 : clientStore.view) == null ? void 0 : _v.projectName,
+      globalClient == null ? void 0 : globalClient.project,
+      globalClient == null ? void 0 : globalClient.projectName,
+      (_w = globalClient == null ? void 0 : globalClient.page) == null ? void 0 : _w.project,
+      (_x = globalClient == null ? void 0 : globalClient.page) == null ? void 0 : _x.projectName,
+      (_y = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _y.project,
+      (_z = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _z.projectName,
+      globalDesigner == null ? void 0 : globalDesigner.project,
+      globalDesigner == null ? void 0 : globalDesigner.projectName,
+      (_A = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _A.project,
+      (_B = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _B.projectName,
+      readPerspectiveProjectFromUrl()
+    ];
+    return candidates.map(normalizePerspectiveProjectName).find(Boolean) || "";
+  }
   function normalizeOverlayPopupViewName(value) {
     return String(value || "").trim().replace(/\.svg$/i, "").replace(/^\/+|\/+$/g, "");
   }
@@ -31312,7 +31642,7 @@ var MesoraDrawingToolBundle = (() => {
     };
   }
   function getOverlayBounds(overlay) {
-    const bbox = overlay == null ? void 0 : overlay.bbox;
+    const bbox = getWidgetVisualBBox(overlay, overlay == null ? void 0 : overlay.bbox);
     if (!bbox || typeof bbox !== "object") {
       return null;
     }
@@ -31612,7 +31942,7 @@ var MesoraDrawingToolBundle = (() => {
     return Math.hypot(dx, dy);
   }
   function PerspectiveViziCanvasBridge(props) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n;
     usePerspectiveThemeVersion(props);
     const rootRef = useRef(null);
     const runtimeScrollSnapshotRef = useRef({
@@ -31663,6 +31993,10 @@ var MesoraDrawingToolBundle = (() => {
     const externalShowRulers = Boolean(getModelValue(props, "showRulers", false));
     const externalShowTagPaths = Boolean(getModelValue(props, "showTagPaths", false));
     const externalSelectionMode = String(getModelValue(props, "selectionMode", "all") || "all");
+    const detectedPerspectiveProject = resolvePerspectiveProjectName(props, perspectiveClientStore);
+    const gatewayScriptProject = String(
+      getModelValue(props, "gatewayScriptProject", getModelValue(props, "projectName", detectedPerspectiveProject)) || ""
+    ).trim();
     const externalStrokeNormalizeWidthRaw = Number(getModelValue(props, "strokeNormalizeWidth", NORMALIZED_SVG_STROKE_WIDTH));
     const externalStrokeNormalizeWidth = Number.isFinite(externalStrokeNormalizeWidthRaw) && externalStrokeNormalizeWidthRaw > 0 ? externalStrokeNormalizeWidthRaw : NORMALIZED_SVG_STROKE_WIDTH;
     const propHmiStateStyleMaps = getModelValue(
@@ -31773,6 +32107,8 @@ var MesoraDrawingToolBundle = (() => {
     const overlaysRef = useRef(coerceArray(externalOverlays));
     const localShapesWriteRef = useRef({ key: externalShapesKey, until: 0 });
     const localOverlaysWriteRef = useRef({ key: externalOverlaysKey, until: 0 });
+    const pendingMouseMoveRef = useRef(null);
+    const mouseMoveRafRef = useRef(0);
     const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
     const historyRef = useRef({ past: [], future: [], current: null });
     const historyRestoreRef = useRef(false);
@@ -32424,7 +32760,9 @@ var MesoraDrawingToolBundle = (() => {
           typeof updater === "function" ? updater(shapesRef.current) : updater
         );
         shapesRef.current = nextShapes;
-        localShapesWriteRef.current = { key: JSON.stringify(nextShapes), until: Date.now() + 2e3 };
+        if (options.persist || options.trackLocalWrite) {
+          localShapesWriteRef.current = { key: JSON.stringify(nextShapes), until: Date.now() + 2e3 };
+        }
         setShapesState(nextShapes);
         if (options.persist) {
           persistShapes(nextShapes);
@@ -32439,7 +32777,9 @@ var MesoraDrawingToolBundle = (() => {
           typeof updater === "function" ? updater(overlaysRef.current) : updater
         );
         overlaysRef.current = nextOverlays;
-        localOverlaysWriteRef.current = { key: JSON.stringify(nextOverlays), until: Date.now() + 2e3 };
+        if (options.persist || options.trackLocalWrite) {
+          localOverlaysWriteRef.current = { key: JSON.stringify(nextOverlays), until: Date.now() + 2e3 };
+        }
         setSvgOverlaysState(nextOverlays);
         if (options.persist) {
           persistSvgOverlays(nextOverlays);
@@ -33840,12 +34180,12 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
         return null;
       }
-      return {
+      return getWidgetVisualBBox(overlay, {
         x: Number.isFinite(x) ? x : 0,
         y: Number.isFinite(y) ? y : 0,
         width,
         height
-      };
+      });
     }, []);
     const selectedShapeItems = useMemo(
       () => shapes.filter((shape) => selectedIds.includes(String((shape == null ? void 0 : shape.id) || ""))),
@@ -34352,8 +34692,17 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     }, [overlaysRef, selectedIds, selectedOverlayIds, shapesRef, updateShapes]);
     const startOrAppendPolylineAt = useCallback((point, event) => {
       if ((drawing == null ? void 0 : drawing.kind) === "polyline" && drawing.id) {
-        if (Number((event == null ? void 0 : event.detail) || 0) >= 2) {
-          finishActivePolylineAt(drawing.id, point, event);
+        if ((event == null ? void 0 : event.shiftKey) || Number((event == null ? void 0 : event.detail) || 0) >= 2) {
+          finishActivePolylineAt(
+            drawing.id,
+            point,
+            (event == null ? void 0 : event.shiftKey) ? {
+              altKey: event == null ? void 0 : event.altKey,
+              ctrlKey: event == null ? void 0 : event.ctrlKey,
+              metaKey: event == null ? void 0 : event.metaKey,
+              shiftKey: false
+            } : event
+          );
           return;
         }
         appendPolylinePoint(drawing.id, maybeConstrainPolylinePoint(drawing.id, point, event));
@@ -36041,19 +36390,60 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         ), { persist: false });
       }
       if ((drawing == null ? void 0 : drawing.kind) === "polyline") {
-        updateShapes((previous) => previous.map((shape) => {
-          if (String((shape == null ? void 0 : shape.id) || "") !== String(drawing.id || "")) {
-            return shape;
+        const shapeId = String(drawing.id || "");
+        const nextPreviewPoint = maybeConstrainPolylinePoint(drawing.id, point, event);
+        updateShapes((previous) => {
+          const index2 = previous.findIndex((shape2) => String((shape2 == null ? void 0 : shape2.id) || "") === shapeId);
+          if (index2 < 0) {
+            return previous;
+          }
+          const shape = previous[index2];
+          if (!Array.isArray(shape == null ? void 0 : shape.points)) {
+            return previous;
           }
           const points = clonePoints(shape.points);
           if (!points.length) {
-            return shape;
+            return previous;
           }
-          points[points.length - 1] = maybeConstrainPolylinePoint(drawing.id, point, event);
-          return { ...shape, points };
-        }), { persist: false });
+          const currentPoint = points[points.length - 1];
+          if (currentPoint && Math.abs(Number(currentPoint.x || 0) - Number(nextPreviewPoint.x || 0)) < 0.01 && Math.abs(Number(currentPoint.y || 0) - Number(nextPreviewPoint.y || 0)) < 0.01) {
+            return previous;
+          }
+          points[points.length - 1] = nextPreviewPoint;
+          const next = previous.slice();
+          next[index2] = { ...shape, points };
+          return next;
+        }, { persist: false });
       }
     }, [canvasPanDrag, clampEditorPanToViewport, constrainPolylineHandleMove, dragHandle, dragSegment, dragState, drawing, editorZoom, marquee, maybeConstrainPolylinePoint, overlayResize, pointFromEvent, screenDeltaToEditorPanDelta, shapeResize, updateShapes, updateSvgOverlays, viewBox.height, viewBox.width]);
+    const scheduleMouseMove = useCallback((event) => {
+      const eventLike = {
+        clientX: Number(event == null ? void 0 : event.clientX) || 0,
+        clientY: Number(event == null ? void 0 : event.clientY) || 0,
+        altKey: Boolean(event == null ? void 0 : event.altKey),
+        shiftKey: Boolean(event == null ? void 0 : event.shiftKey),
+        ctrlKey: Boolean(event == null ? void 0 : event.ctrlKey),
+        metaKey: Boolean(event == null ? void 0 : event.metaKey)
+      };
+      pendingMouseMoveRef.current = eventLike;
+      const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function" ? window.requestAnimationFrame.bind(window) : null;
+      if (!raf) {
+        pendingMouseMoveRef.current = null;
+        handleMouseMove(eventLike);
+        return;
+      }
+      if (mouseMoveRafRef.current) {
+        return;
+      }
+      mouseMoveRafRef.current = raf(() => {
+        mouseMoveRafRef.current = 0;
+        const nextEvent = pendingMouseMoveRef.current;
+        pendingMouseMoveRef.current = null;
+        if (nextEvent) {
+          handleMouseMove(nextEvent);
+        }
+      });
+    }, [handleMouseMove]);
     const handleMouseUp = useCallback(() => {
       var _a2, _b2;
       if (canvasPanDrag == null ? void 0 : canvasPanDrag.startClient) {
@@ -36148,7 +36538,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       if (!useWindowPointerTracking || typeof window === "undefined") {
         return void 0;
       }
-      const handleMove = (event) => handleMouseMove(event);
+      const handleMove = (event) => scheduleMouseMove(event);
       const handleRelease = () => handleMouseUp();
       window.addEventListener("mousemove", handleMove);
       window.addEventListener("mouseup", handleRelease);
@@ -36162,7 +36552,16 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         window.removeEventListener("pointercancel", handleRelease);
         window.removeEventListener("blur", handleRelease);
       };
-    }, [handleMouseMove, handleMouseUp, useWindowPointerTracking]);
+    }, [handleMouseUp, scheduleMouseMove, useWindowPointerTracking]);
+    useEffect(() => {
+      return () => {
+        if (mouseMoveRafRef.current && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+          window.cancelAnimationFrame(mouseMoveRafRef.current);
+        }
+        mouseMoveRafRef.current = 0;
+        pendingMouseMoveRef.current = null;
+      };
+    }, []);
     const handleSvgDoubleClick = useCallback((event) => {
       var _a2, _b2;
       (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
@@ -36179,15 +36578,6 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       const isDrawingPolyline = (drawing == null ? void 0 : drawing.kind) === "polyline" && drawing.id;
       if ((tool === "polyline" || tool === "trunkconn") && isDrawingPolyline) {
-        if (event == null ? void 0 : event.shiftKey) {
-          finishActivePolylineAt(drawing.id, pointFromEvent(event), {
-            altKey: event == null ? void 0 : event.altKey,
-            ctrlKey: event == null ? void 0 : event.ctrlKey,
-            metaKey: event == null ? void 0 : event.metaKey,
-            shiftKey: false
-          });
-          return;
-        }
         removeCurrentPolylineSegment();
         return;
       }
@@ -36345,20 +36735,24 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       [selectedOverlayEmbeddedView]
     );
     const selectedOverlayWidgetSupportsWrite = useMemo(
-      () => ["displaybox", "pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
+      () => ["displaybox", "pushbutton", "onoffbutton", "routedisplay"].includes(selectedOverlayWidgetKind),
       [selectedOverlayWidgetKind]
     );
     const selectedOverlayWidgetSupportsView = useMemo(
       () => ["pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
       [selectedOverlayWidgetKind]
     );
+    const selectedOverlayWidgetSupportsScript = useMemo(
+      () => ["pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
+      [selectedOverlayWidgetKind]
+    );
     const selectedOverlayWidgetSupportsButtonTextColor = useMemo(
-      () => ["displaybox", "pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
+      () => ["displaybox", "pushbutton", "onoffbutton", "routedisplay"].includes(selectedOverlayWidgetKind),
       [selectedOverlayWidgetKind]
     );
     const selectedOverlayWidgetWriteMode = useMemo(
-      () => resolveWidgetWriteMode(selectedOverlay == null ? void 0 : selectedOverlay.widget, selectedOverlay == null ? void 0 : selectedOverlay.tagPath),
-      [selectedOverlay]
+      () => selectedOverlayWidgetKind === "routedisplay" ? "opc" : resolveWidgetWriteMode(selectedOverlay == null ? void 0 : selectedOverlay.widget, selectedOverlay == null ? void 0 : selectedOverlay.tagPath),
+      [selectedOverlay, selectedOverlayWidgetKind]
     );
     const selectedOverlayWidgetOpcServer = useMemo(
       () => resolveWidgetOpcServer(selectedOverlay == null ? void 0 : selectedOverlay.widget),
@@ -37593,6 +37987,85 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       }
       throw new Error(lastError);
     }, []);
+    const callGatewayScript = useCallback(async (scriptPath, options = {}) => {
+      const nextScriptPath = String(scriptPath || (options == null ? void 0 : options.script) || (options == null ? void 0 : options.scriptPath) || "").trim();
+      if (!nextScriptPath) {
+        throw new Error("Gateway script path is required.");
+      }
+      const nextProject = String((options == null ? void 0 : options.project) || gatewayScriptProject || "").trim();
+      const requestBody = {
+        script: nextScriptPath
+      };
+      if (nextProject) {
+        requestBody.project = nextProject;
+      }
+      if (Array.isArray(options == null ? void 0 : options.args)) {
+        requestBody.args = options.args;
+      }
+      if (isPlainObject(options == null ? void 0 : options.kwargs)) {
+        requestBody.kwargs = options.kwargs;
+      }
+      let lastError = "Gateway script call failed.";
+      for (const routePath of MODULE_GATEWAY_SCRIPT_CALL_ROUTE_CANDIDATES) {
+        try {
+          const response = await fetch(routePath, {
+            method: "POST",
+            cache: "no-store",
+            credentials: "same-origin",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(requestBody)
+          });
+          let payload = null;
+          try {
+            payload = await response.json();
+          } catch (_error) {
+            payload = null;
+          }
+          const error = String((payload == null ? void 0 : payload.error) || "").trim();
+          const payloadReachedScriptRoute = payload && typeof payload === "object" && (Object.prototype.hasOwnProperty.call(payload, "ok") || Object.prototype.hasOwnProperty.call(payload, "script") || Object.prototype.hasOwnProperty.call(payload, "project") || error);
+          if (payloadReachedScriptRoute && ((payload == null ? void 0 : payload.ok) === false || error)) {
+            throw new Error(error || `Gateway script call failed (${response.status}).`);
+          }
+          if (!response.ok) {
+            lastError = `Gateway script call failed (${response.status}).`;
+            if (response.status === 404 || response.status === 405 || response.status === 503) {
+              continue;
+            }
+            throw new Error(lastError);
+          }
+          if (error) {
+            throw new Error(error);
+          }
+          if ((payload == null ? void 0 : payload.ok) === false) {
+            throw new Error("Gateway script call failed.");
+          }
+          if (payload == null) {
+            lastError = `Gateway script call failed (${response.status}).`;
+            continue;
+          }
+          return payload;
+        } catch (error) {
+          lastError = String((error == null ? void 0 : error.message) || "Gateway script call failed.");
+          if (lastError && !/Gateway script call failed \((?:404|405|503)\)\.?/i.test(lastError)) {
+            throw error;
+          }
+        }
+      }
+      throw new Error(lastError);
+    }, [gatewayScriptProject]);
+    useEffect(() => {
+      if (typeof window === "undefined") {
+        return void 0;
+      }
+      window.viziCallGatewayScript = callGatewayScript;
+      return () => {
+        if (window.viziCallGatewayScript === callGatewayScript) {
+          delete window.viziCallGatewayScript;
+        }
+      };
+    }, [callGatewayScript]);
     const selectedShapeLabel = selectedShape ? (() => {
       const rawType = String((selectedShape == null ? void 0 : selectedShape.type) || "").toLowerCase();
       if (rawType === "polyline") {
@@ -37838,7 +38311,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           setSelectedSegment(null);
           return;
         }
-        if (event.key === "Enter" && (drawing == null ? void 0 : drawing.kind) === "polyline") {
+        const isFinishLineKey = event.key === "Enter" || event.key === "Return" || event.code === "NumpadEnter";
+        if (isFinishLineKey && (drawing == null ? void 0 : drawing.kind) === "polyline") {
           event.preventDefault();
           finishPolyline();
         }
@@ -38053,7 +38527,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
               showRulers: editorVisible && showRulers,
               useWindowPointerTracking,
               onSvgMouseDown: editorVisible ? handleSvgMouseDown : NOOP,
-              onMouseMove: editorVisible ? handleMouseMove : NOOP,
+              onMouseMove: editorVisible ? scheduleMouseMove : NOOP,
               onMouseUp: editorVisible ? handleMouseUp : NOOP,
               onContextMenu: editorVisible ? handleCanvasContextMenu : NOOP,
               onShapeMouseDown: editorVisible ? handleShapeMouseDown : NOOP,
@@ -38087,6 +38561,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
               ignitionTagValuesByPath,
               writeIgnitionTagValue,
               writeIgnitionOpcValue,
+              callGatewayScript,
               liveTagKeys: coerceArray(getModelValue(props, "liveTagKeys", EMPTY_ARRAY)),
               opcTags: coerceArray(getModelValue(props, "opcTags", EMPTY_ARRAY)),
               opcTemplateMap: EMPTY_MAP,
@@ -39185,15 +39660,19 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           value: selectedOverlayWidgetWriteMode,
                           sections: [
                             {
-                              items: [
+                              items: selectedOverlayWidgetKind === "routedisplay" ? [{ value: "opc", label: "Direct OPC" }] : [
                                 { value: "ignition", label: "Ignition Tag" },
                                 { value: "opc", label: "Direct OPC" },
-                                ...selectedOverlayWidgetSupportsView ? [{ value: "view", label: "Open View" }] : []
+                                ...selectedOverlayWidgetSupportsView ? [{ value: "view", label: "Open View" }] : [],
+                                ...selectedOverlayWidgetSupportsScript ? [{ value: "script", label: "Gateway Script" }] : []
                               ]
                             }
                           ],
                           onChange: (nextValue) => {
-                            commitSelectedOverlayWidgetField("writeMode", nextValue);
+                            commitSelectedOverlayWidgetField(
+                              "writeMode",
+                              selectedOverlayWidgetKind === "routedisplay" ? "opc" : nextValue
+                            );
                           }
                         }
                       ) : null,
@@ -39218,6 +39697,54 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                             rows: 4,
                             onCommit: (value) => {
                               commitSelectedOverlayWidgetField("viewParamsJson", String(value != null ? value : "").trim() || "{}");
+                            }
+                          }
+                        )
+                      ] }) : null,
+                      !selectedOverlayIsEmbeddedView && selectedOverlay.widget && selectedOverlayWidgetSupportsScript && selectedOverlayWidgetWriteMode === "script" ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "Script Path",
+                            value: ((_f = selectedOverlay.widget) == null ? void 0 : _f.scriptPath) || "",
+                            placeholder: "Terra.UI.test.helloworld",
+                            onCommit: (value) => {
+                              commitSelectedOverlayWidgetField("scriptPath", String(value != null ? value : "").trim());
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "Project",
+                            value: ((_g = selectedOverlay.widget) == null ? void 0 : _g.scriptProject) || "",
+                            placeholder: "Terra (optional)",
+                            onCommit: (value) => {
+                              commitSelectedOverlayWidgetField("scriptProject", String(value != null ? value : "").trim());
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          PropertyTextArea,
+                          {
+                            label: "Args JSON",
+                            value: ((_h = selectedOverlay.widget) == null ? void 0 : _h.scriptArgsJson) || "[]",
+                            placeholder: "[]",
+                            rows: 3,
+                            onCommit: (value) => {
+                              commitSelectedOverlayWidgetField("scriptArgsJson", String(value != null ? value : "").trim() || "[]");
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          PropertyTextArea,
+                          {
+                            label: "Kwargs JSON",
+                            value: ((_i = selectedOverlay.widget) == null ? void 0 : _i.scriptKwargsJson) || "{}",
+                            placeholder: '{"tag_path":"Route1"}',
+                            rows: 4,
+                            onCommit: (value) => {
+                              commitSelectedOverlayWidgetField("scriptKwargsJson", String(value != null ? value : "").trim() || "{}");
                             }
                           }
                         )
@@ -39368,7 +39895,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           PropertyField,
                           {
                             label: "Title",
-                            value: ((_f = selectedOverlay.widget) == null ? void 0 : _f.title) || "",
+                            value: ((_j = selectedOverlay.widget) == null ? void 0 : _j.title) || "",
                             onCommit: (value) => {
                               commitSelectedOverlayWidgetField("title", String(value != null ? value : ""));
                             }
@@ -39378,7 +39905,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           PropertyField,
                           {
                             label: "Title Font Size",
-                            value: formatPanelNumber((_g = selectedOverlay.widget) == null ? void 0 : _g.titleFontSize),
+                            value: formatPanelNumber((_k = selectedOverlay.widget) == null ? void 0 : _k.titleFontSize),
                             placeholder: "Auto",
                             onCommit: (value) => {
                               const trimmed = String(value != null ? value : "").trim();
@@ -39398,7 +39925,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           PropertyColorField,
                           {
                             label: "Text Color",
-                            value: ((_h = selectedOverlay.widget) == null ? void 0 : _h.textColor) || "",
+                            value: ((_l = selectedOverlay.widget) == null ? void 0 : _l.textColor) || "",
                             placeholder: "#e2e8f0",
                             onCommit: (value) => {
                               commitSelectedOverlayWidgetField("textColor", String(value != null ? value : "").trim());
@@ -39409,14 +39936,14 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           PropertyColorField,
                           {
                             label: "Button Text",
-                            value: ((_i = selectedOverlay.widget) == null ? void 0 : _i.buttonTextColor) || "",
+                            value: ((_m = selectedOverlay.widget) == null ? void 0 : _m.buttonTextColor) || "",
                             placeholder: "#ffffff",
                             onCommit: (value) => {
                               commitSelectedOverlayWidgetField("buttonTextColor", String(value != null ? value : "").trim());
                             }
                           }
                         ) : null,
-                        String(((_j = selectedOverlay.widget) == null ? void 0 : _j.kind) || "").trim().toLowerCase() === "pushbutton" ? /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                        String(((_n = selectedOverlay.widget) == null ? void 0 : _n.kind) || "").trim().toLowerCase() === "pushbutton" && selectedOverlayWidgetWriteMode !== "view" && selectedOverlayWidgetWriteMode !== "script" ? /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
                           /* @__PURE__ */ jsx(
                             PropertyField,
                             {

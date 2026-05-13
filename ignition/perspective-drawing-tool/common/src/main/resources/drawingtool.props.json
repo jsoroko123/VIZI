@@ -23,7 +23,8 @@
         "autoLoad": true,
         "browserEditEnabled": false
       },
-      "hmiStateStyleMaps": {}
+      "hmiStateStyleMaps": {},
+      "gatewayScriptProject": ""
     },
     "shapes": [],
     "svgOverlays": [],
@@ -53,7 +54,8 @@
     "selectionMode": "all",
     "strokeNormalizeWidth": 1.5,
     "liveUpdatesEnabled": true,
-    "liveClickable": false
+    "liveClickable": false,
+    "gatewayScriptProject": ""
   },
   "properties": {
     "document": {
@@ -136,6 +138,12 @@
           "description": "Optional overrides for the gateway hmi-state-style-maps.json file. Maps UDT HMI_State integer values to Ignition style classes.",
           "additionalProperties": true,
           "default": {}
+        },
+        "gatewayScriptProject": {
+          "type": "string",
+          "title": "Gateway Script Project",
+          "description": "Ignition project used when this component calls a Project Library script through the gateway.",
+          "default": ""
         }
       },
       "default": {
@@ -157,7 +165,8 @@
           "autoLoad": true,
           "browserEditEnabled": false
         },
-        "hmiStateStyleMaps": {}
+        "hmiStateStyleMaps": {},
+        "gatewayScriptProject": ""
       }
     },
     "shapes": {
@@ -319,6 +328,12 @@
     "liveClickable": {
       "type": "boolean",
       "default": false
+    },
+    "gatewayScriptProject": {
+      "type": "string",
+      "title": "Gateway Script Project",
+      "description": "Ignition project used when this component calls a Project Library script through the gateway. Leave blank to infer the first segment of the script path.",
+      "default": ""
     },
     "sessionTheme": {
       "type": "string",

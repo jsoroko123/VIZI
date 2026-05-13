@@ -2,6 +2,8 @@ package com.mesora.perspective.drawing.gateway;
 
 import static com.mesora.perspective.drawing.common.MesoraPerspectiveDrawing.URL_ALIAS;
 
+import java.lang.reflect.Array;
+import java.lang.reflect.Method;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -16,6 +18,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 import jakarta.servlet.http.HttpServletResponse;
 
@@ -26,6 +29,8 @@ import com.inductiveautomation.ignition.common.gson.GsonBuilder;
 import com.inductiveautomation.ignition.common.licensing.LicenseState;
 import com.inductiveautomation.ignition.common.model.values.BasicQualifiedValue;
 import com.inductiveautomation.ignition.common.model.values.QualifiedValue;
+import com.inductiveautomation.ignition.common.script.ScriptFunction;
+import com.inductiveautomation.ignition.common.script.ScriptManager;
 import com.inductiveautomation.ignition.common.tags.browsing.NodeDescription;
 import com.inductiveautomation.ignition.common.tags.config.types.TagObjectType;
 import com.inductiveautomation.ignition.common.tags.model.TagPath;
@@ -44,6 +49,8 @@ import com.inductiveautomation.ignition.gateway.util.BasicWriteRequest;
 import com.inductiveautomation.perspective.common.api.ComponentRegistry;
 import com.inductiveautomation.perspective.gateway.api.PerspectiveContext;
 import com.mesora.perspective.drawing.common.comp.DrawingTool;
+import org.python.core.Py;
+import org.python.core.PyObject;
 
 public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHook {
 
@@ -56,6 +63,9 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
     private static final String SYSTEM_PROVIDER_NAME = "System";
     private static final String DEFAULT_OPC_SERVER_NAME = "Ignition OPC UA Server";
     private static final String EMPTY_RESPONSE = "";
+    private static final String GATEWAY_SCRIPT_WRAPPER_FUNCTION = "__vizi_gateway_script_call__";
+    private static final Pattern SAFE_GATEWAY_SCRIPT_PATH =
+        Pattern.compile("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+");
 
     private GatewayContext gatewayContext;
     private ComponentRegistry componentRegistry;
@@ -137,6 +147,24 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
                 request == null ? null : request.getParameter("path"),
                 request == null ? null : request.getParameter("value")
             ))
+            .renderer(gson::toJson)
+            .type(RouteGroup.TYPE_JSON)
+            .accessControl(AccessControlStrategy.OPEN_ROUTE)
+            .nocache()
+            .mount();
+
+        routes.newRoute("/gateway-script-call")
+            .method(HttpMethod.POST)
+            .handler((request, response) -> callGatewayScript(request, response))
+            .renderer(gson::toJson)
+            .type(RouteGroup.TYPE_JSON)
+            .accessControl(AccessControlStrategy.OPEN_ROUTE)
+            .nocache()
+            .mount();
+
+        routes.newRoute("/gateway-script-call/")
+            .method(HttpMethod.POST)
+            .handler((request, response) -> callGatewayScript(request, response))
             .renderer(gson::toJson)
             .type(RouteGroup.TYPE_JSON)
             .accessControl(AccessControlStrategy.OPEN_ROUTE)
@@ -604,6 +632,133 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
         }
     }
 
+    private GatewayScriptCallResponse callGatewayScript(RequestContext request, HttpServletResponse response) {
+        GatewayScriptCallRequest callRequest = null;
+
+        try {
+            String body = request == null ? "" : request.readBody();
+            if (body != null && !body.isBlank()) {
+                callRequest = gson.fromJson(body, GatewayScriptCallRequest.class);
+            }
+        } catch (Exception e) {
+            return new GatewayScriptCallResponse(false, "", "", null, "Invalid gateway script request: " + String.valueOf(e.getMessage()));
+        }
+
+        String scriptPath = firstNonBlank(
+            callRequest == null ? null : callRequest.script(),
+            callRequest == null ? null : callRequest.scriptPath(),
+            request == null ? null : request.getParameter("script"),
+            request == null ? null : request.getParameter("scriptPath")
+        );
+        String projectName = firstNonBlank(
+            callRequest == null ? null : callRequest.project(),
+            request == null ? null : request.getParameter("project")
+        );
+        List<String> availableProjects = listGatewayProjectNames();
+        projectName = resolveGatewayProjectName(projectName, availableProjects);
+
+        if (projectName.isBlank()) {
+            return new GatewayScriptCallResponse(
+                false,
+                "",
+                scriptPath,
+                null,
+                "Ignition project name is required. Set the widget Project field to the Ignition project that contains the script."
+                    + formatAvailableProjectsMessage(availableProjects)
+            );
+        }
+        if (scriptPath.isBlank()) {
+            return new GatewayScriptCallResponse(false, projectName, "", null, "Gateway script path is required.");
+        }
+        if (!SAFE_GATEWAY_SCRIPT_PATH.matcher(scriptPath).matches()) {
+            return new GatewayScriptCallResponse(
+                false,
+                projectName,
+                scriptPath,
+                null,
+                "Gateway script path must be dotted identifiers, for example Terra.UI.test.helloworld."
+            );
+        }
+        if (this.gatewayContext == null || this.gatewayContext.getProjectManager() == null) {
+            return new GatewayScriptCallResponse(
+                false,
+                projectName,
+                scriptPath,
+                null,
+                "Ignition project manager was unavailable." + formatAvailableProjectsMessage(availableProjects)
+            );
+        }
+
+        try {
+            ScriptManager scriptManager = this.gatewayContext.getProjectManager().getProjectScriptManager(projectName);
+            if (scriptManager == null) {
+                return new GatewayScriptCallResponse(
+                    false,
+                    projectName,
+                    scriptPath,
+                    null,
+                    "Ignition project script manager was unavailable for project '" + projectName + "'."
+                        + formatAvailableProjectsMessage(availableProjects)
+                );
+            }
+
+            List<Object> args = callRequest == null || callRequest.args() == null
+                ? List.of()
+                : callRequest.args();
+            Map<String, Object> kwargs = callRequest == null || callRequest.kwargs() == null
+                ? Map.of()
+                : callRequest.kwargs();
+            String source = "def " + GATEWAY_SCRIPT_WRAPPER_FUNCTION + "(*args, **kwargs):\n"
+                + "    return " + scriptPath + "(*args, **kwargs)\n";
+            ScriptFunction function = scriptManager.compileFunction(
+                "<vizi-gateway-script-call>",
+                GATEWAY_SCRIPT_WRAPPER_FUNCTION,
+                source
+            );
+            PyObject result = invokeGatewayScriptFunction(function, args, kwargs);
+            return new GatewayScriptCallResponse(
+                true,
+                projectName,
+                scriptPath,
+                normalizeScriptResult(result),
+                ""
+            );
+        } catch (Exception e) {
+            logger.warnf(
+                "Failed to call gateway script '%s' in project '%s': %s",
+                scriptPath,
+                projectName,
+                String.valueOf(e.getMessage())
+            );
+            return new GatewayScriptCallResponse(false, projectName, scriptPath, null, String.valueOf(e.getMessage()));
+        }
+    }
+
+    private PyObject invokeGatewayScriptFunction(
+        ScriptFunction function,
+        List<Object> rawArgs,
+        Map<String, Object> rawKwargs
+    ) throws Exception {
+        List<PyObject> pyArgs = new ArrayList<>();
+        List<Object> args = rawArgs == null ? List.of() : rawArgs;
+        Map<String, Object> kwargs = rawKwargs == null ? Map.of() : rawKwargs;
+        for (Object arg : args) {
+            pyArgs.add(Py.java2py(arg));
+        }
+        List<String> keywords = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : kwargs.entrySet()) {
+            String keyword = String.valueOf(entry.getKey() == null ? "" : entry.getKey()).trim();
+            if (keyword.isBlank()) {
+                throw new IllegalArgumentException("Gateway script keyword argument names cannot be blank.");
+            }
+            keywords.add(keyword);
+            pyArgs.add(Py.java2py(entry.getValue()));
+        }
+        String[] keywordNames = keywords.toArray(new String[0]);
+        PyObject[] arguments = pyArgs.toArray(new PyObject[0]);
+        return keywordNames.length > 0 ? function.invoke(arguments, keywordNames) : function.invoke(arguments);
+    }
+
     private void browseProviderTags(
         GatewayTagManager tagManager,
         String provider,
@@ -742,6 +897,120 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
         return "";
     }
 
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            String text = String.valueOf(value == null ? "" : value).trim();
+            if (!text.isBlank()) {
+                return text;
+            }
+        }
+        return "";
+    }
+
+    private List<String> listGatewayProjectNames() {
+        if (this.gatewayContext == null || this.gatewayContext.getProjectManager() == null) {
+            return List.of();
+        }
+        Object projectManager = this.gatewayContext.getProjectManager();
+        LinkedHashMap<String, String> byLowerName = new LinkedHashMap<>();
+        for (String methodName : List.of(
+            "getNames",
+            "getManifests",
+            "getProjectNames",
+            "getAllProjectNames",
+            "getProjectIds",
+            "getProjects",
+            "getAllProjects",
+            "getMountedProjects",
+            "getMountedProjectNames"
+        )) {
+            try {
+                Method method = projectManager.getClass().getMethod(methodName);
+                Object value = method.invoke(projectManager);
+                collectProjectNames(value, byLowerName);
+            } catch (Exception _ignored) {
+            }
+        }
+        List<String> names = new ArrayList<>(byLowerName.values());
+        names.sort(String.CASE_INSENSITIVE_ORDER);
+        return names;
+    }
+
+    private String resolveGatewayProjectName(String rawProjectName, List<String> availableProjects) {
+        String projectName = String.valueOf(rawProjectName == null ? "" : rawProjectName).trim();
+        if (projectName.isBlank() || availableProjects == null) {
+            return projectName;
+        }
+        for (String availableProject : availableProjects) {
+            if (projectName.equalsIgnoreCase(String.valueOf(availableProject))) {
+                return availableProject;
+            }
+        }
+        return projectName;
+    }
+
+    private void collectProjectNames(Object value, LinkedHashMap<String, String> byLowerName) {
+        if (value == null || byLowerName == null) {
+            return;
+        }
+        if (value instanceof CharSequence textValue) {
+            addProjectName(String.valueOf(textValue), byLowerName);
+            return;
+        }
+        if (value instanceof Optional<?> optionalValue) {
+            optionalValue.ifPresent((item) -> collectProjectNames(item, byLowerName));
+            return;
+        }
+        if (value instanceof Map<?, ?> mapValue) {
+            mapValue.keySet().forEach((key) -> collectProjectNames(key, byLowerName));
+            mapValue.values().forEach((item) -> collectProjectNames(item, byLowerName));
+            return;
+        }
+        if (value instanceof Iterable<?> iterableValue) {
+            for (Object item : iterableValue) {
+                collectProjectNames(item, byLowerName);
+            }
+            return;
+        }
+        Class<?> valueClass = value.getClass();
+        if (valueClass.isArray()) {
+            int length = Array.getLength(value);
+            for (int index = 0; index < length; index += 1) {
+                collectProjectNames(Array.get(value, index), byLowerName);
+            }
+            return;
+        }
+        for (String methodName : List.of("getName", "getProjectName", "getId", "getProjectId")) {
+            try {
+                Method method = valueClass.getMethod(methodName);
+                Object name = method.invoke(value);
+                if (name != null) {
+                    addProjectName(String.valueOf(name), byLowerName);
+                    return;
+                }
+            } catch (Exception _ignored) {
+            }
+        }
+    }
+
+    private void addProjectName(String rawName, LinkedHashMap<String, String> byLowerName) {
+        String name = String.valueOf(rawName == null ? "" : rawName).trim();
+        if (name.isBlank() || "[object Object]".equals(name)) {
+            return;
+        }
+        byLowerName.putIfAbsent(name.toLowerCase(Locale.ROOT), name);
+    }
+
+    private String formatAvailableProjectsMessage(List<String> availableProjects) {
+        if (availableProjects == null || availableProjects.isEmpty()) {
+            return " No available projects were reported by the Ignition project manager.";
+        }
+        return " Available projects: " + String.join(", ", availableProjects) + ".";
+    }
+
     private Object normalizeQualifiedValue(Object rawValue) {
         if (rawValue == null) {
             return null;
@@ -752,6 +1021,57 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
             || rawValue instanceof String
         ) {
             return rawValue;
+        }
+        return String.valueOf(rawValue);
+    }
+
+    private Object normalizeScriptResult(PyObject rawValue) {
+        if (rawValue == null || rawValue == Py.None) {
+            return null;
+        }
+        Object javaValue = rawValue.__tojava__(Object.class);
+        if (javaValue == Py.NoConversion || javaValue instanceof PyObject) {
+            return String.valueOf(rawValue);
+        }
+        return normalizeScriptResult(javaValue);
+    }
+
+    private Object normalizeScriptResult(Object rawValue) {
+        if (rawValue == null) {
+            return null;
+        }
+        if (rawValue instanceof QualifiedValue qualifiedValue) {
+            return normalizeScriptResult(qualifiedValue.getValue());
+        }
+        if (
+            rawValue instanceof Number
+            || rawValue instanceof Boolean
+            || rawValue instanceof String
+        ) {
+            return rawValue;
+        }
+        if (rawValue instanceof Map<?, ?> mapValue) {
+            LinkedHashMap<String, Object> normalized = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : mapValue.entrySet()) {
+                normalized.put(String.valueOf(entry.getKey()), normalizeScriptResult(entry.getValue()));
+            }
+            return normalized;
+        }
+        if (rawValue instanceof Iterable<?> iterableValue) {
+            List<Object> normalized = new ArrayList<>();
+            for (Object item : iterableValue) {
+                normalized.add(normalizeScriptResult(item));
+            }
+            return normalized;
+        }
+        Class<?> valueClass = rawValue.getClass();
+        if (valueClass.isArray()) {
+            int length = Array.getLength(rawValue);
+            List<Object> normalized = new ArrayList<>(length);
+            for (int index = 0; index < length; index += 1) {
+                normalized.add(normalizeScriptResult(Array.get(rawValue, index)));
+            }
+            return normalized;
         }
         return String.valueOf(rawValue);
     }
@@ -983,6 +1303,24 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
         String path,
         Object value,
         String quality,
+        String error
+    ) {
+    }
+
+    private record GatewayScriptCallRequest(
+        String project,
+        String script,
+        String scriptPath,
+        List<Object> args,
+        Map<String, Object> kwargs
+    ) {
+    }
+
+    private record GatewayScriptCallResponse(
+        boolean ok,
+        String project,
+        String script,
+        Object result,
         String error
     ) {
     }

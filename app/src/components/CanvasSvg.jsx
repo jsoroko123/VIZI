@@ -10,7 +10,7 @@ import {
 } from "../state/opcLiveStore";
 import { normalizeTagValue } from "../utils/appDataTransforms";
 import { isDiverterEType, isRouteIdTagKey, isStateTagKey } from "../utils/appUiHelpers";
-import { resolveWidgetOpcServer, resolveWidgetWriteMode } from "../utils/widgetTemplates";
+import { getWidgetVisualBBox, resolveWidgetOpcServer, resolveWidgetWriteMode } from "../utils/widgetTemplates";
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -391,6 +391,7 @@ function CanvasSvg({
   ignitionTagValuesByPath,
   writeIgnitionTagValue = null,
   writeIgnitionOpcValue = null,
+  callGatewayScript = null,
   liveTagKeys,
   opcTags,
   opcTemplateMap,
@@ -2241,7 +2242,8 @@ function CanvasSvg({
   };
 
   const getWritableWidgetTagPath = (overlay) => {
-    if (resolveWidgetWriteMode(overlay?.widget, overlay?.tagPath) === "view") return "";
+    const writeMode = resolveWidgetWriteMode(overlay?.widget, overlay?.tagPath);
+    if (writeMode === "view" || writeMode === "script") return "";
     const tagPath = String(overlay?.tagPath || "").trim();
     if (!tagPath) return "";
     const lower = tagPath.toLowerCase();
@@ -2322,16 +2324,55 @@ function CanvasSvg({
     position.top = Math.max(12, Math.round((viewportHeight - heightForCenter) / 2));
     return position;
   };
+  const getWidgetGatewayScriptPath = (overlay) => String(
+    overlay?.widget?.scriptPath
+    ?? overlay?.widget?.gatewayScriptPath
+    ?? overlay?.widget?.projectScriptPath
+    ?? ""
+  ).trim();
+  const getWidgetGatewayScriptProject = (overlay) => String(
+    overlay?.widget?.scriptProject
+    ?? overlay?.widget?.gatewayScriptProject
+    ?? overlay?.widget?.projectName
+    ?? ""
+  ).trim();
+  const parseWidgetGatewayScriptArgs = (overlay) => {
+    const raw = String(
+      overlay?.widget?.scriptArgsJson
+      ?? overlay?.widget?.argsJson
+      ?? "[]"
+    ).trim();
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      throw new Error("Script args must be a JSON array.");
+    }
+    return parsed;
+  };
+  const parseWidgetGatewayScriptKwargs = (overlay) => {
+    const raw = String(
+      overlay?.widget?.scriptKwargsJson
+      ?? overlay?.widget?.kwargsJson
+      ?? "{}"
+    ).trim();
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Script kwargs must be a JSON object.");
+    }
+    return parsed;
+  };
   const getMissingWidgetWriteTargetMessage = (overlay) => {
     const writeMode = resolveWidgetWriteMode(overlay?.widget, overlay?.tagPath);
     if (writeMode === "view") return "Configure view path to open.";
+    if (writeMode === "script") return "Configure Gateway Script path to call.";
     return writeMode === "opc"
       ? "Configure OPC item path to enable write."
       : "Configure Ignition tag path to enable write.";
   };
   const getWidgetOptimisticWriteKeys = useCallback(
-    (overlay) => {
-      const tagPath = normalizeTagValue(getWritableWidgetTagPath(overlay));
+    (overlay, overrideTagPath = "") => {
+      const tagPath = normalizeTagValue(overrideTagPath || getWritableWidgetTagPath(overlay));
       if (!tagPath) return [];
       const out = [];
       const seen = new Set();
@@ -2367,8 +2408,8 @@ function CanvasSvg({
     [watchedLiveKeys]
   );
   const applyOptimisticWidgetWrite = useCallback(
-    (overlay, nextValue) => {
-      const keys = getWidgetOptimisticWriteKeys(overlay);
+    (overlay, nextValue, overrideTagPath = "") => {
+      const keys = getWidgetOptimisticWriteKeys(overlay, overrideTagPath);
       if (!keys.length) return;
       const patch = {};
       keys.forEach((rawKey) => {
@@ -2410,29 +2451,60 @@ function CanvasSvg({
     const overlayId = String(overlay?.id || "").trim();
     const tagPath = getWritableWidgetTagPath(overlay);
     if (!overlayId || !tagPath) return;
+    await submitWidgetWriteToTag(overlay, tagPath, writeValue);
+  };
+
+  const submitWidgetWriteToTag = async (overlay, targetTagPath, writeValue, options = {}) => {
+    const overlayId = String(overlay?.id || "").trim();
+    const tagPath = String(targetTagPath || "").trim();
+    if (!overlayId || !tagPath) return;
     const payloadValue = coerceWidgetWriteValue(writeValue);
-    const writeMode = resolveWidgetWriteMode(overlay?.widget, tagPath);
+    const requestedMode = String(options?.writeMode || "").trim().toLowerCase();
+    const writeMode = requestedMode === "opc" || requestedMode === "ignition"
+      ? requestedMode
+      : resolveWidgetWriteMode(overlay?.widget, tagPath);
     const isIgnitionTarget = writeMode === "ignition";
     const isDirectOpcTarget = writeMode === "opc";
     const opcServerName = resolveWidgetOpcServer(overlay?.widget);
+    const pulse = options?.pulse === true;
+    const pulseDelayMs = Math.max(80, Number(options?.pulseDelayMs) || 170);
+    const pulseResetValue = Object.prototype.hasOwnProperty.call(options || {}, "pulseResetValue")
+      ? coerceWidgetWriteValue(options.pulseResetValue)
+      : false;
+    const writeOne = async (nextWriteValue) => {
+      const data = isIgnitionTarget && typeof writeIgnitionTagValue === "function"
+        ? await writeIgnitionTagValue(tagPath, nextWriteValue)
+        : isDirectOpcTarget && typeof writeIgnitionOpcValue === "function"
+        ? await writeIgnitionOpcValue(tagPath, nextWriteValue, opcServerName)
+        : await writeOpcValue({
+            tagKey: tagPath,
+            legacyTagKey: tagPath,
+            value: nextWriteValue,
+          });
+      const nextValue = Object.prototype.hasOwnProperty.call(data || {}, "value")
+        ? data.value
+        : nextWriteValue;
+      if (!isIgnitionTarget) {
+        applyOptimisticWidgetWrite(overlay, nextValue, tagPath);
+      }
+      return nextValue;
+    };
     const runWrite = async () => {
       setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: true }));
       setWidgetWriteErrorByOverlay((prev) => ({ ...prev, [overlayId]: "" }));
       try {
-        const data = isIgnitionTarget && typeof writeIgnitionTagValue === "function"
-          ? await writeIgnitionTagValue(tagPath, payloadValue)
-          : isDirectOpcTarget && typeof writeIgnitionOpcValue === "function"
-          ? await writeIgnitionOpcValue(tagPath, payloadValue, opcServerName)
-          : await writeOpcValue({
-              tagKey: tagPath,
-              legacyTagKey: tagPath,
-              value: payloadValue,
-            });
-        const nextValue = Object.prototype.hasOwnProperty.call(data || {}, "value")
-          ? data.value
-          : payloadValue;
-        if (!isIgnitionTarget) {
-          applyOptimisticWidgetWrite(overlay, nextValue);
+        const nextValue = await writeOne(payloadValue);
+        if (pulse) {
+          const timeoutFn = typeof window !== "undefined" && typeof window.setTimeout === "function"
+            ? window.setTimeout
+            : setTimeout;
+          timeoutFn(async () => {
+            try {
+              await writeOne(pulseResetValue);
+            } catch {
+              // Pulse reset errors should not block the operator action.
+            }
+          }, pulseDelayMs);
         }
         setWidgetWriteDraftByOverlay((prev) => ({
           ...prev,
@@ -2457,6 +2529,39 @@ function CanvasSvg({
         widgetWriteChainRef.current.delete(overlayId);
       }
     }
+  };
+
+  const getRouteCommandOpcItemPath = (routeTagPath, commandName) => {
+    const base = String(routeTagPath || "")
+      .trim()
+      .replace(/^\[[^\]]+\]/, "")
+      .replace(/[\\/]+/g, ".")
+      .replace(/[.]+/g, ".")
+      .replace(/^[.]+|[.]+$/g, "");
+    const command = String(commandName || "").trim();
+    if (!base || !command) return "";
+    return `${base}.HMI_Write.Cmd.${command}`;
+  };
+
+  const submitRouteDisplayCommand = (overlay, commandName) => {
+    const overlayId = String(overlay?.id || "").trim();
+    const routeTagPath = String(overlay?.tagPath || "").trim();
+    const commandOpcItemPath = getRouteCommandOpcItemPath(routeTagPath, commandName);
+    if (!overlayId || !commandOpcItemPath) {
+      if (overlayId) {
+        setWidgetWriteErrorByOverlay((prev) => ({
+          ...prev,
+          [overlayId]: "Bind parent route tag to enable commands.",
+        }));
+      }
+      return;
+    }
+    submitWidgetWriteToTag(overlay, commandOpcItemPath, true, {
+      writeMode: "opc",
+      pulse: true,
+      pulseResetValue: false,
+      pulseDelayMs: 180,
+    });
   };
 
   const parseDbBinding = (rawTagPath) => {
@@ -3215,7 +3320,7 @@ function CanvasSvg({
     const seriesTags = parseWidgetSeriesTags(overlay);
     const primaryTagPath = String(seriesTags[0] || "").trim();
     const label = formatWidgetSourceLabel(primaryTagPath || String(overlay?.tagPath || "").trim()) || "Unbound";
-    const bb = overlay?.bbox || { x: 0, y: 0, width: 320, height: 180 };
+    const bb = getWidgetVisualBBox(overlay, overlay?.bbox || { x: 0, y: 0, width: 320, height: 180 });
     const x = Number(bb.x) || 0;
     const y = Number(bb.y) || 0;
     const w = Math.max(80, Number(bb.width) || 320);
@@ -3595,30 +3700,75 @@ function CanvasSvg({
       const panelFill = isDarkTheme ? "rgba(15, 23, 42, 0.72)" : "rgba(255, 255, 255, 0.82)";
       const headerFill = isDarkTheme ? "rgba(37, 99, 235, 0.30)" : "rgba(37, 99, 235, 0.12)";
       const headerStroke = isDarkTheme ? "rgba(96, 165, 250, 0.32)" : "rgba(37, 99, 235, 0.22)";
-      const routePad = Math.max(7, Math.min(12, Math.round(Math.min(w, h) * 0.065)));
-      const innerGap = Math.max(4, Math.min(7, Math.round(routePad * 0.6)));
-      const footerH = 0;
+      const routePad = Math.max(4, Math.min(7, Math.round(Math.min(w, h) * 0.045)));
+      const innerGap = Math.max(3, Math.min(5, Math.round(routePad * 0.65)));
+      const showRouteCommands = h >= 96;
+      const commandH = showRouteCommands ? Math.max(18, Math.min(22, Math.round(h * 0.15))) : 0;
+      const footerH = showRouteCommands ? commandH + innerGap : 0;
       const usableH = Math.max(48, h - routePad * 2 - innerGap - footerH);
-      const routeHeadH = Math.max(22, Math.min(30, Math.round(usableH * 0.28)));
+      const routeHeadH = Math.max(20, Math.min(26, Math.round(usableH * 0.28)));
       const headerX = x + routePad;
       const headerY = y + routePad;
       const headerW = Math.max(20, w - routePad * 2);
       const bodyX = headerX;
       const bodyY = headerY + routeHeadH + innerGap;
       const bodyW = Math.max(20, w - routePad * 2);
-      const bodyBottom = y + h - routePad - footerH;
+      const maxCommandY = showRouteCommands ? y + h - routePad - commandH : 0;
+      const bodyBottom = showRouteCommands ? maxCommandY - innerGap : y + h - routePad;
       const bodyAvailableH = Math.max(42, bodyBottom - bodyY);
-      const rowStep = Math.max(16, Math.min(22, bodyAvailableH / Math.max(1, rows.length)));
-      const bodyH = Math.max(42, Math.min(bodyAvailableH, rowStep * rows.length));
-      const bodyTop = bodyY + rowStep * 0.5;
-      const routeCardH = Math.max(1, Math.min(h - 2, routePad * 2 + routeHeadH + innerGap + bodyH));
       const labelFont = Math.max(8, Math.min(12, Math.round(w / 28)));
       const valueFont = Math.max(9, Math.min(14, Math.round(w / 25)));
+      const compactRowStep = Math.max(16, Math.min(22, Math.round(Math.max(labelFont, valueFont) * 1.7)));
+      const rowStep = Math.max(14, Math.min(bodyAvailableH / Math.max(1, rows.length), compactRowStep));
+      const bodyH = Math.max(42, Math.min(bodyAvailableH, rowStep * rows.length));
+      const bodyTop = bodyY + rowStep * 0.5;
+      const commandY = showRouteCommands ? bodyY + bodyH + innerGap : 0;
+      const routeContentBottom = showRouteCommands ? commandY + commandH : bodyY + bodyH;
+      const routeCardH = Math.max(1, Math.min(h - 2, routeContentBottom - y + routePad - 1));
       const maxTitleChars = Math.max(8, Math.floor((headerW - routePad * 2 - 10) / 7));
       const maxValueChars = Math.max(6, Math.floor((w * 0.48) / Math.max(6, valueFont * 0.58)));
       const rowBaselineOffset = Math.max(3, Math.min(5, valueFont * 0.34));
+      const routeWriteBusy = widgetWriteBusyByOverlay?.[overlayId] === true;
+      const routeWriteError = String(widgetWriteErrorByOverlay?.[overlayId] || "");
+      const routeCommandsEnabled = Boolean(routeTagPath) && !routeWriteBusy;
+      const commandGap = Math.max(4, Math.min(6, Math.round(bodyW * 0.03)));
+      const commandButtonW = Math.max(24, (bodyW - commandGap) / 2);
+      const routeCommandButtonBase = {
+        width: "100%",
+        height: "100%",
+        borderRadius: 8,
+        color: widgetButtonTextColor,
+        fontSize: dense ? 9 : 10,
+        fontWeight: 850,
+        letterSpacing: "0.01em",
+        border: "1px solid rgba(255,255,255,0.16)",
+        boxSizing: "border-box",
+        cursor: widgetInteractionEnabled && routeCommandsEnabled ? "pointer" : widgetSurfaceCursor,
+        opacity: routeCommandsEnabled ? 1 : 0.62,
+      };
+      const stopRouteCommandEvent = (event) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+      };
+      const stopRouteCommandPointerEvent = (event) => {
+        event?.stopPropagation?.();
+      };
+      const routeCommandButtons = [
+        {
+          key: "pause",
+          label: "Pause",
+          command: "CmdPause",
+          background: "linear-gradient(180deg, #f59e0b 0%, #b45309 100%)",
+        },
+        {
+          key: "continue",
+          label: "Continue",
+          command: "CmdContinue",
+          background: "linear-gradient(180deg, #22c55e 0%, #15803d 100%)",
+        },
+      ];
       return (
-        <g pointerEvents="none">
+        <g>
           <rect x={x + 1} y={y + 1} width={w - 2} height={routeCardH} rx={14} fill={cardFill} stroke={widgetBorderColor} />
           <rect x={headerX} y={headerY} width={headerW} height={routeHeadH} rx={10} fill={headerFill} stroke={headerStroke} />
           <rect x={headerX} y={headerY} width={Math.max(5, Math.min(9, routePad - 2))} height={routeHeadH} rx={5} fill={stateTone} />
@@ -3657,6 +3807,56 @@ function CanvasSvg({
               </g>
             );
           })}
+          {showRouteCommands ? (
+            <foreignObject
+              x={bodyX}
+              y={commandY}
+              width={bodyW}
+              height={commandH}
+              style={{ pointerEvents: widgetInteractionEnabled ? "auto" : "none" }}
+            >
+              <div
+                xmlns="http://www.w3.org/1999/xhtml"
+                onDoubleClickCapture={openWidgetProperties}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: `${commandButtonW}px ${commandButtonW}px`,
+                  gap: commandGap,
+                  width: "100%",
+                  height: "100%",
+                  pointerEvents: widgetInteractionEnabled ? "auto" : "none",
+                  cursor: widgetSurfaceCursor,
+                }}
+              >
+                {routeCommandButtons.map((button) => (
+                  <button
+                    key={`route-command-${overlayId}-${button.key}`}
+                    data-widget-control={widgetInteractionEnabled ? "true" : undefined}
+                    onPointerDown={stopRouteCommandPointerEvent}
+                    onMouseDown={stopRouteCommandPointerEvent}
+                    onDoubleClick={openWidgetProperties}
+                    onClick={(event) => {
+                      stopRouteCommandEvent(event);
+                      if (!widgetInteractionEnabled || !routeCommandsEnabled) return;
+                      submitRouteDisplayCommand(overlay, button.command);
+                    }}
+                    disabled={!widgetInteractionEnabled || !routeCommandsEnabled}
+                    style={{
+                      ...routeCommandButtonBase,
+                      background: button.background,
+                    }}
+                  >
+                    {routeWriteBusy ? "..." : button.label}
+                  </button>
+                ))}
+              </div>
+            </foreignObject>
+          ) : null}
+          {routeWriteError && showRouteCommands ? (
+            <text x={bodyX + 3} y={commandY - 2} fill="#ef4444" fontSize={8} fontFamily="system-ui" fontWeight={800}>
+              {truncateRouteDisplayText(routeWriteError, Math.max(12, Math.floor(bodyW / 6)))}
+            </text>
+          ) : null}
         </g>
       );
     };
@@ -4244,8 +4444,14 @@ function CanvasSvg({
     if (kind === "pushButton") {
       const writeMode = resolveWidgetWriteMode(overlay?.widget, overlay?.tagPath);
       const opensView = writeMode === "view";
+      const isGatewayScript = writeMode === "script";
+      const gatewayScriptPath = getWidgetGatewayScriptPath(overlay);
       const tagPath = getWritableWidgetTagPath(overlay);
-      const canWrite = opensView ? Boolean(getWidgetOpenViewPath(overlay)) : Boolean(tagPath);
+      const canWrite = opensView
+        ? Boolean(getWidgetOpenViewPath(overlay))
+        : isGatewayScript
+        ? Boolean(gatewayScriptPath)
+        : Boolean(tagPath);
       const writeBusy = widgetWriteBusyByOverlay?.[overlayId] === true;
       const writeError = String(widgetWriteErrorByOverlay?.[overlayId] || "");
       const pressValue = Object.prototype.hasOwnProperty.call(cfg || {}, "writeValue") ? cfg.writeValue : 1;
@@ -4271,6 +4477,29 @@ function CanvasSvg({
       const buttonH = Math.max(18, Math.round(y + h - bottomInset - contentTop));
       const buttonX = x + contentPadX;
       const buttonY = contentTop;
+      const submitPrimaryAction = () => {
+        if (opensView) {
+          submitWidgetOpenView(overlay);
+          return;
+        }
+        if (writeBusy) return;
+        if (!canWrite) {
+          setWidgetWriteErrorByOverlay((prev) => ({
+            ...prev,
+            [overlayId]: getMissingWidgetWriteTargetMessage(overlay),
+          }));
+          return;
+        }
+        if (isGatewayScript) {
+          submitWidgetGatewayScript(overlay);
+          return;
+        }
+        submitWidgetWrite(overlay, pressValue);
+      };
+      const submitReleaseAction = () => {
+        if (opensView || isGatewayScript || writeBusy || !canWrite) return;
+        submitWidgetWrite(overlay, releaseValue);
+      };
       return (
         <g>
           {showTitle ? (
@@ -4304,56 +4533,29 @@ function CanvasSvg({
                   if (!widgetInteractionEnabled) return;
                   e.stopPropagation();
                   setWidgetPressed(overlayId, true);
-                  if (opensView) {
-                    submitWidgetOpenView(overlay);
-                    return;
-                  }
-                  if (writeBusy) return;
-                  if (!canWrite) {
-                    setWidgetWriteErrorByOverlay((prev) => ({
-                      ...prev,
-                      [overlayId]: getMissingWidgetWriteTargetMessage(overlay),
-                    }));
-                    return;
-                  }
-                  submitWidgetWrite(overlay, pressValue);
+                  submitPrimaryAction();
                 }}
                 onMouseUp={(e) => {
                   if (!widgetInteractionEnabled) return;
                   e.stopPropagation();
                   setWidgetPressed(overlayId, false);
-                  if (opensView || writeBusy || !canWrite) return;
-                  submitWidgetWrite(overlay, releaseValue);
+                  submitReleaseAction();
                 }}
                 onMouseLeave={() => {
                   if (!widgetInteractionEnabled) return;
                   setWidgetPressed(overlayId, false);
-                  if (opensView || writeBusy || !canWrite) return;
-                  submitWidgetWrite(overlay, releaseValue);
+                  submitReleaseAction();
                 }}
                 onTouchStart={(e) => {
                   if (!widgetInteractionEnabled) return;
                   e.stopPropagation();
                   setWidgetPressed(overlayId, true);
-                  if (opensView) {
-                    submitWidgetOpenView(overlay);
-                    return;
-                  }
-                  if (writeBusy) return;
-                  if (!canWrite) {
-                    setWidgetWriteErrorByOverlay((prev) => ({
-                      ...prev,
-                      [overlayId]: getMissingWidgetWriteTargetMessage(overlay),
-                    }));
-                    return;
-                  }
-                  submitWidgetWrite(overlay, pressValue);
+                  submitPrimaryAction();
                 }}
                 onTouchEnd={() => {
                   if (!widgetInteractionEnabled) return;
                   setWidgetPressed(overlayId, false);
-                  if (opensView || writeBusy || !canWrite) return;
-                  submitWidgetWrite(overlay, releaseValue);
+                  submitReleaseAction();
                 }}
                 disabled={!widgetInteractionEnabled || writeBusy}
                 style={{
@@ -4392,7 +4594,15 @@ function CanvasSvg({
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {opensView ? "Open" : writeBusy ? "Writing..." : visualPressed ? "Pressed" : "Press"}
+                  {opensView
+                    ? "Open"
+                    : isGatewayScript
+                    ? (writeBusy ? "Calling..." : "Run")
+                    : writeBusy
+                    ? "Writing..."
+                    : visualPressed
+                    ? "Pressed"
+                    : "Press"}
                 </span>
               </button>
             </div>
@@ -4411,30 +4621,16 @@ function CanvasSvg({
               onMouseDown={(e) => {
                 e.stopPropagation();
                 setWidgetPressed(overlayId, true);
-                if (opensView) {
-                  submitWidgetOpenView(overlay);
-                  return;
-                }
-                if (writeBusy) return;
-                if (!canWrite) {
-                  setWidgetWriteErrorByOverlay((prev) => ({
-                    ...prev,
-                    [overlayId]: getMissingWidgetWriteTargetMessage(overlay),
-                  }));
-                  return;
-                }
-                submitWidgetWrite(overlay, pressValue);
+                submitPrimaryAction();
               }}
               onMouseUp={(e) => {
                 e.stopPropagation();
                 setWidgetPressed(overlayId, false);
-                if (opensView || writeBusy || !canWrite) return;
-                submitWidgetWrite(overlay, releaseValue);
+                submitReleaseAction();
               }}
               onMouseLeave={() => {
                 setWidgetPressed(overlayId, false);
-                if (opensView || writeBusy || !canWrite) return;
-                submitWidgetWrite(overlay, releaseValue);
+                submitReleaseAction();
               }}
             />
           ) : null}
@@ -4450,8 +4646,14 @@ function CanvasSvg({
     if (kind === "onOffButton") {
       const writeMode = resolveWidgetWriteMode(overlay?.widget, overlay?.tagPath);
       const opensView = writeMode === "view";
+      const isGatewayScript = writeMode === "script";
+      const gatewayScriptPath = getWidgetGatewayScriptPath(overlay);
       const tagPath = getWritableWidgetTagPath(overlay);
-      const canWrite = opensView ? Boolean(getWidgetOpenViewPath(overlay)) : Boolean(tagPath);
+      const canWrite = opensView
+        ? Boolean(getWidgetOpenViewPath(overlay))
+        : isGatewayScript
+        ? Boolean(gatewayScriptPath)
+        : Boolean(tagPath);
       const writeBusy = widgetWriteBusyByOverlay?.[overlayId] === true;
       const writeError = String(widgetWriteErrorByOverlay?.[overlayId] || "");
       const isOn = toBooleanLike(rawVal);
@@ -4474,6 +4676,25 @@ function CanvasSvg({
       const buttonH = Math.max(28, Math.round(y + h - bottomInset - contentTop));
       const buttonX = x + contentPadX;
       const buttonY = contentTop;
+      const submitToggleAction = () => {
+        if (opensView) {
+          submitWidgetOpenView(overlay);
+          return;
+        }
+        if (writeBusy) return;
+        if (!canWrite) {
+          setWidgetWriteErrorByOverlay((prev) => ({
+            ...prev,
+            [overlayId]: getMissingWidgetWriteTargetMessage(overlay),
+          }));
+          return;
+        }
+        if (isGatewayScript) {
+          submitWidgetGatewayScript(overlay);
+          return;
+        }
+        submitWidgetWrite(overlay, isOn ? 0 : 1);
+      };
       return (
         <g>
           {showTitle ? (
@@ -4514,19 +4735,7 @@ function CanvasSvg({
                   if (!widgetInteractionEnabled) return;
                   e.stopPropagation();
                   pulseWidgetPress(overlayId, 180);
-                  if (opensView) {
-                    submitWidgetOpenView(overlay);
-                    return;
-                  }
-                  if (writeBusy) return;
-                  if (!canWrite) {
-                    setWidgetWriteErrorByOverlay((prev) => ({
-                      ...prev,
-                      [overlayId]: getMissingWidgetWriteTargetMessage(overlay),
-                    }));
-                    return;
-                  }
-                  submitWidgetWrite(overlay, isOn ? 0 : 1);
+                  submitToggleAction();
                 }}
                 disabled={!widgetInteractionEnabled || writeBusy}
                 style={{
@@ -4623,19 +4832,7 @@ function CanvasSvg({
               onClick={(e) => {
                 e.stopPropagation();
                 pulseWidgetPress(overlayId, 180);
-                if (opensView) {
-                  submitWidgetOpenView(overlay);
-                  return;
-                }
-                if (writeBusy) return;
-                if (!canWrite) {
-                  setWidgetWriteErrorByOverlay((prev) => ({
-                    ...prev,
-                    [overlayId]: getMissingWidgetWriteTargetMessage(overlay),
-                  }));
-                  return;
-                }
-                submitWidgetWrite(overlay, isOn ? 0 : 1);
+                submitToggleAction();
               }}
             />
           ) : null}
@@ -5615,6 +5812,53 @@ function CanvasSvg({
         [overlayId]: err?.message || "Failed to open view.",
       }));
       return false;
+    }
+  };
+
+  const submitWidgetGatewayScript = async (overlay) => {
+    const overlayId = String(overlay?.id || "").trim();
+    if (!overlayId) return false;
+    const scriptPath = getWidgetGatewayScriptPath(overlay);
+    if (!scriptPath) {
+      setWidgetWriteErrorByOverlay((prev) => ({
+        ...prev,
+        [overlayId]: getMissingWidgetWriteTargetMessage(overlay),
+      }));
+      return false;
+    }
+    const scriptCaller = typeof callGatewayScript === "function"
+      ? callGatewayScript
+      : typeof globalThis !== "undefined" && typeof globalThis.viziCallGatewayScript === "function"
+      ? globalThis.viziCallGatewayScript
+      : null;
+    if (typeof scriptCaller !== "function") {
+      setWidgetWriteErrorByOverlay((prev) => ({
+        ...prev,
+        [overlayId]: "Gateway script API is not available.",
+      }));
+      return false;
+    }
+
+    setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: true }));
+    setWidgetWriteErrorByOverlay((prev) => ({ ...prev, [overlayId]: "" }));
+    try {
+      const project = getWidgetGatewayScriptProject(overlay);
+      const args = parseWidgetGatewayScriptArgs(overlay);
+      const kwargs = parseWidgetGatewayScriptKwargs(overlay);
+      const payload = {};
+      if (project) payload.project = project;
+      if (args.length) payload.args = args;
+      if (Object.keys(kwargs).length) payload.kwargs = kwargs;
+      await scriptCaller(scriptPath, payload);
+      return true;
+    } catch (err) {
+      setWidgetWriteErrorByOverlay((prev) => ({
+        ...prev,
+        [overlayId]: err?.message || "Gateway script call failed.",
+      }));
+      return false;
+    } finally {
+      setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: false }));
     }
   };
 
@@ -10879,7 +11123,7 @@ function CanvasSvg({
         : isLiveMode
         ? (widgetInteractionEnabled ? "pointer" : "default")
         : (tool === "select" ? "move" : "crosshair");
-      const widgetBounds = o?.bbox || { x: 0, y: 0, width: 320, height: 180 };
+      const widgetBounds = getWidgetVisualBBox(o, o?.bbox || { x: 0, y: 0, width: 320, height: 180 });
       const showDesignWidgetHitbox = !isLiveMode;
       return (
         <g

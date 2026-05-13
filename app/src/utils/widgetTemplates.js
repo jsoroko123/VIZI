@@ -1,6 +1,52 @@
 export const DEFAULT_WIDGET_WRITE_MODE = "ignition";
 export const DEFAULT_WIDGET_OPC_SERVER = "Ignition OPC UA Server";
 
+const FIXED_ASPECT_WIDGET_SIZES = {
+  routedisplay: { width: 320, height: 128 },
+  scaleadapter: { width: 320, height: 126 },
+  scaleadaptor: { width: 320, height: 126 },
+};
+
+function normalizeWidgetKind(widgetKind) {
+  return String(widgetKind || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+export function getWidgetVisualBBox(overlay, fallbackBBox = null) {
+  const rawBBox = fallbackBBox || overlay?.bbox;
+  if (!rawBBox || typeof rawBBox !== "object") {
+    return rawBBox;
+  }
+
+  const bbox = {
+    x: Number(rawBBox.x || rawBBox.left || 0),
+    y: Number(rawBBox.y || rawBBox.top || 0),
+    width: Number(rawBBox.width || rawBBox.w || 0),
+    height: Number(rawBBox.height || rawBBox.h || 0),
+  };
+
+  if (!Number.isFinite(bbox.width) || !Number.isFinite(bbox.height) || bbox.width <= 0 || bbox.height <= 0) {
+    return rawBBox;
+  }
+
+  const widgetSize = FIXED_ASPECT_WIDGET_SIZES[normalizeWidgetKind(overlay?.widget?.kind)];
+  if (!widgetSize) {
+    return bbox;
+  }
+
+  const targetHeight = Math.max(60, bbox.width * widgetSize.height / widgetSize.width);
+  if (bbox.height <= targetHeight + 1) {
+    return bbox;
+  }
+
+  return {
+    ...bbox,
+    height: targetHeight,
+  };
+}
+
 export function resolveWidgetWriteMode(widget, tagPath = "") {
   const explicit = String(
     widget?.writeMode
@@ -10,6 +56,15 @@ export function resolveWidgetWriteMode(widget, tagPath = "") {
   ).trim().toLowerCase();
   if (explicit === "view" || explicit === "popup" || explicit === "openview" || explicit === "open-view") {
     return "view";
+  }
+  if (
+    explicit === "script" ||
+    explicit === "gateway-script" ||
+    explicit === "gatewayscript" ||
+    explicit === "project-script" ||
+    explicit === "projectscript"
+  ) {
+    return "script";
   }
   if (explicit === "opc" || explicit === "ignition") {
     return explicit;
@@ -63,7 +118,7 @@ export function widgetTemplate(widgetKey) {
     },
     routeDisplay: {
       name: "Widget-RouteDisplay.svg",
-      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 132"><rect x="1" y="1" width="318" height="130" rx="14" fill="#0f172a" stroke="#334155" stroke-width="2"/><rect x="10" y="10" width="300" height="28" rx="9" fill="#2563eb"/><text x="160" y="29" text-anchor="middle" fill="#ffffff" font-size="13" font-family="system-ui" font-weight="800">Route Display</text><text x="18" y="62" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="700">Job Number</text><text x="302" y="62" text-anchor="end" fill="#e2e8f0" font-size="12" font-family="system-ui" font-weight="800">120</text><text x="18" y="84" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="700">Job Step</text><text x="302" y="84" text-anchor="end" fill="#e2e8f0" font-size="12" font-family="system-ui" font-weight="800">3</text><text x="18" y="106" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="700">Route State</text><text x="302" y="106" text-anchor="end" fill="#22c55e" font-size="12" font-family="system-ui" font-weight="800">Active</text></svg>`,
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 128"><rect x="1" y="1" width="318" height="126" rx="14" fill="#0f172a" stroke="#334155" stroke-width="2"/><rect x="7" y="7" width="306" height="24" rx="8" fill="#1d4ed833" stroke="#60a5fa55"/><rect x="7" y="7" width="7" height="24" rx="4" fill="#22c55e"/><text x="22" y="23" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="800">Route Display</text><rect x="7" y="35" width="306" height="60" rx="9" fill="#0f172acc" stroke="#334155"/><text x="17" y="52" fill="#94a3b8" font-size="10" font-family="system-ui" font-weight="700">Job Number</text><text x="301" y="52" text-anchor="end" fill="#e2e8f0" font-size="11" font-family="system-ui" font-weight="800">120</text><line x1="15" y1="60" x2="305" y2="60" stroke="#334155"/><text x="17" y="70" fill="#94a3b8" font-size="10" font-family="system-ui" font-weight="700">Job Step</text><text x="301" y="70" text-anchor="end" fill="#e2e8f0" font-size="11" font-family="system-ui" font-weight="800">3</text><line x1="15" y1="78" x2="305" y2="78" stroke="#334155"/><text x="17" y="88" fill="#94a3b8" font-size="10" font-family="system-ui" font-weight="700">Route State</text><text x="301" y="88" text-anchor="end" fill="#22c55e" font-size="11" font-family="system-ui" font-weight="800">Active</text><rect x="7" y="100" width="148" height="21" rx="7" fill="#b45309"/><text x="81" y="114" text-anchor="middle" fill="#ffffff" font-size="10" font-family="system-ui" font-weight="800">Pause</text><rect x="165" y="100" width="148" height="21" rx="7" fill="#15803d"/><text x="239" y="114" text-anchor="middle" fill="#ffffff" font-size="10" font-family="system-ui" font-weight="800">Continue</text></svg>`,
     },
     scaleAdapter: {
       name: "Widget-ScaleAdapter.svg",
@@ -105,6 +160,10 @@ export function defaultWidgetSettings(widgetKey) {
     opcServer: DEFAULT_WIDGET_OPC_SERVER,
     viewPath: "",
     viewParamsJson: "{}",
+    scriptPath: "",
+    scriptProject: "",
+    scriptArgsJson: "[]",
+    scriptKwargsJson: "{}",
     writeValue: 1,
     releaseValue: 0,
     onValue: 1,
@@ -142,7 +201,7 @@ export function defaultWidgetSettings(widgetKey) {
   if (kind === "statusTable") return { ...base, historyPoints: 12, rowCount: 6 };
   if (kind === "kpi") return { ...base, historyPoints: 10 };
   if (kind === "displayBox") return { ...base, historyPoints: 10 };
-  if (kind === "routeDisplay") return { ...base, title: "Route Display", historyPoints: 10 };
+  if (kind === "routeDisplay") return { ...base, title: "Route Display", writeMode: "opc", historyPoints: 10 };
   if (kind === "scaleAdapter" || kind === "scaleAdaptor") return { ...base, kind: "scaleAdapter", title: "Scale Adapter", historyPoints: 10, decimals: 4 };
   if (kind === "weather") return { ...base, historyPoints: 10, decimals: 1, unit: "F" };
   if (kind === "countdownBar") return { ...base, historyPoints: 10, decimals: 1 };

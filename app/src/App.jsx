@@ -91,7 +91,7 @@ import {
   usesTwoWayUdtEType,
   writeFirstInnerSvgText,
 } from "./utils/appUiHelpers";
-import { defaultWidgetSettings, widgetTemplate } from "./utils/widgetTemplates";
+import { defaultWidgetSettings, getWidgetVisualBBox, widgetTemplate } from "./utils/widgetTemplates";
 import {
   fetchBatchFirstValues,
   getTableMeta,
@@ -10438,12 +10438,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (!key) return null;
     const o = svgOverlayById.get(key);
     if (o?.bbox) {
-      const next = {
+      const next = getWidgetVisualBBox(o, {
         x: Number(o.bbox.x || 0),
         y: Number(o.bbox.y || 0),
         width: Number(o.bbox.width || 0),
         height: Number(o.bbox.height || 0),
-      };
+      });
       overlayLocalBBoxCacheRef.current.set(key, next);
       return next;
     }
@@ -13501,6 +13501,50 @@ const CONTENT_FIT_HEADROOM = 0.94;
     scheduleProjectAutoSave();
   }
 
+  function commitPolylineFinalPointFromEvent(e) {
+    if (!drawing || drawing.mode !== "draw-poly") return;
+    const id = drawing.id;
+    if (mouseMoveRafRef.current) {
+      window.cancelAnimationFrame(mouseMoveRafRef.current);
+      mouseMoveRafRef.current = 0;
+    }
+    pendingMouseMoveRef.current = null;
+
+    const finishEvent = {
+      clientX: Number(e?.clientX) || 0,
+      clientY: Number(e?.clientY) || 0,
+      altKey: !!e?.altKey,
+      shiftKey: false,
+    };
+    const curShape = shapesRef.current?.find((s) => s.id === id);
+    if (curShape?.type !== "polyline" || !Array.isArray(curShape.points) || curShape.points.length < 2) {
+      return;
+    }
+
+    const pts0 = curShape.points;
+    const fixed0 = pts0.slice(0, -1);
+    const last0 = fixed0[fixed0.length - 1] || pts0[0];
+    const first0 = fixed0[0];
+    let nextP = svgPoint(finishEvent, { snapToGrid: true, disablePolylineSnap: true });
+    if (finishEvent.altKey && last0) {
+      nextP = constrainHV(last0, nextP);
+    }
+    if (!finishEvent.altKey) {
+      const endpointSnap = getNearestPolylineEndpointSnap(
+        nextP,
+        POLYLINE_ENDPOINT_SNAP_THRESHOLD,
+        { excludeShapeId: id, excludeIndexes: [0, pts0.length - 1] }
+      );
+      nextP = endpointSnap.point;
+    }
+    if (first0 && distance(nextP, first0) <= 12) {
+      nextP = { x: first0.x, y: first0.y };
+    }
+    const newPts = pts0.slice();
+    newPts[newPts.length - 1] = { x: Number(nextP?.x) || 0, y: Number(nextP?.y) || 0 };
+    applyShapeDrawPreview(id, { points: newPts });
+  }
+
   async function onPickWidget(widgetKey, anchorOverride) {
     const tmpl = widgetTemplate(widgetKey);
     const key = addGeneratedSvg(tmpl.name, tmpl.raw);
@@ -13675,6 +13719,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
     widgetWriteMode: "ignition",
     widgetViewPath: "",
     widgetViewParamsJson: "{}",
+    widgetScriptPath: "",
+    widgetScriptProject: "",
+    widgetScriptArgsJson: "[]",
+    widgetScriptKwargsJson: "{}",
     widgetLocation: "",
     widgetMin: "0",
     widgetMax: "100",
@@ -13760,6 +13808,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
         widgetWriteMode: "ignition",
         widgetViewPath: "",
         widgetViewParamsJson: "{}",
+        widgetScriptPath: "",
+        widgetScriptProject: "",
+        widgetScriptArgsJson: "[]",
+        widgetScriptKwargsJson: "{}",
         widgetLocation: "",
         widgetMin: "0",
         widgetMax: "100",
@@ -13876,6 +13928,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
           widgetWriteMode: String(w.writeMode || w.writeTarget || "ignition"),
           widgetViewPath: String(w.viewPath || w.popupViewPath || w.openViewPath || ""),
           widgetViewParamsJson: String(w.viewParamsJson || w.paramsJson || w.popupParamsJson || "{}"),
+          widgetScriptPath: String(w.scriptPath || w.gatewayScriptPath || w.projectScriptPath || ""),
+          widgetScriptProject: String(w.scriptProject || w.gatewayScriptProject || w.projectName || ""),
+          widgetScriptArgsJson: String(w.scriptArgsJson || w.argsJson || "[]"),
+          widgetScriptKwargsJson: String(w.scriptKwargsJson || w.kwargsJson || "{}"),
           widgetLocation: String(w.location || ""),
           widgetMin: String(Number.isFinite(Number(w.min)) ? Number(w.min) : 0),
           widgetMax: String(Number.isFinite(Number(w.max)) ? Number(w.max) : 100),
@@ -13962,6 +14018,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
           widgetWriteMode: "ignition",
           widgetViewPath: "",
           widgetViewParamsJson: "{}",
+          widgetScriptPath: "",
+          widgetScriptProject: "",
+          widgetScriptArgsJson: "[]",
+          widgetScriptKwargsJson: "{}",
           widgetLocation: "",
           widgetMin: "0",
           widgetMax: "100",
@@ -14049,6 +14109,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
       widgetWriteMode: "ignition",
       widgetViewPath: "",
       widgetViewParamsJson: "{}",
+      widgetScriptPath: "",
+      widgetScriptProject: "",
+      widgetScriptArgsJson: "[]",
+      widgetScriptKwargsJson: "{}",
       widgetLocation: "",
       widgetMin: "0",
       widgetMax: "100",
@@ -14443,11 +14507,21 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const writeModeRaw = String(source.widgetWriteMode || "").trim().toLowerCase();
     const writeMode = writeModeRaw === "view"
       ? "view"
+      : ["script", "gateway-script", "gatewayscript", "project-script", "projectscript"].includes(writeModeRaw)
+      ? "script"
       : writeModeRaw === "opc"
       ? "opc"
       : "ignition";
     const viewPath = String(source.widgetViewPath || "").trim();
     const viewParamsJson = String(source.widgetViewParamsJson || "{}").trim() || "{}";
+    const sourceHasScriptPath = Object.prototype.hasOwnProperty.call(source, "widgetScriptPath");
+    const sourceHasScriptProject = Object.prototype.hasOwnProperty.call(source, "widgetScriptProject");
+    const sourceHasScriptArgsJson = Object.prototype.hasOwnProperty.call(source, "widgetScriptArgsJson");
+    const sourceHasScriptKwargsJson = Object.prototype.hasOwnProperty.call(source, "widgetScriptKwargsJson");
+    const scriptPath = String(source.widgetScriptPath || "").trim();
+    const scriptProject = String(source.widgetScriptProject || "").trim();
+    const scriptArgsJson = String(source.widgetScriptArgsJson || "[]").trim() || "[]";
+    const scriptKwargsJson = String(source.widgetScriptKwargsJson || "{}").trim() || "{}";
     const location = String(source.widgetLocation ?? "").trim();
     const unit = String(source.widgetUnit ?? "").trim();
     const min = Number(source.widgetMin);
@@ -14564,6 +14638,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
             writeMode,
             viewPath,
             viewParamsJson,
+            scriptPath: sourceHasScriptPath ? scriptPath : String(current.scriptPath ?? current.gatewayScriptPath ?? current.projectScriptPath ?? ""),
+            scriptProject: sourceHasScriptProject ? scriptProject : String(current.scriptProject ?? current.gatewayScriptProject ?? current.projectName ?? ""),
+            scriptArgsJson: sourceHasScriptArgsJson ? scriptArgsJson : String(current.scriptArgsJson ?? current.argsJson ?? "[]"),
+            scriptKwargsJson: sourceHasScriptKwargsJson ? scriptKwargsJson : String(current.scriptKwargsJson ?? current.kwargsJson ?? "{}"),
             location,
             unit,
             min: Number.isFinite(min) ? min : Number(current.min ?? 0) || 0,
@@ -16172,6 +16250,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (tool === "polyline") {
       let p2 = p;
 
+      if (e.shiftKey && drawing?.mode === "draw-poly" && Number(e.detail || 0) <= 1) {
+        e.preventDefault();
+        e.stopPropagation();
+        commitPolylineFinalPointFromEvent(e);
+        finishPolyline();
+        return;
+      }
+
       if (e.altKey && drawing?.mode === "draw-poly") {
         const cur = shapesRef.current.find((s) => s.id === drawing.id);
         if (cur?.type === "polyline" && Array.isArray(cur.points) && cur.points.length >= 2) {
@@ -16253,7 +16339,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     function onKeyDown(e) {
       if (isTypingTarget(e.target)) return;
-      if (e.key !== "Enter") return;
+      const isFinishKey = e.key === "Enter" || e.key === "Return" || e.code === "NumpadEnter";
+      if (!isFinishKey) return;
       e.preventDefault();
       e.stopPropagation();
       if (editingId) {
@@ -16348,43 +16435,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (tool === "polyline" && drawing?.mode === "draw-poly") {
       const id = drawing.id;
       if (!e.shiftKey) {
-        if (mouseMoveRafRef.current) {
-          window.cancelAnimationFrame(mouseMoveRafRef.current);
-          mouseMoveRafRef.current = 0;
-        }
-        pendingMouseMoveRef.current = null;
-
-        const finishEvent = {
-          clientX: Number(e.clientX) || 0,
-          clientY: Number(e.clientY) || 0,
-          altKey: !!e.altKey,
-          shiftKey: false,
-        };
-        const curShape = shapesRef.current?.find((s) => s.id === id);
-        if (curShape?.type === "polyline" && Array.isArray(curShape.points) && curShape.points.length >= 2) {
-          const pts0 = curShape.points;
-          const fixed0 = pts0.slice(0, -1);
-          const last0 = fixed0[fixed0.length - 1] || pts0[0];
-          const first0 = fixed0[0];
-          let nextP = svgPoint(finishEvent, { snapToGrid: true, disablePolylineSnap: true });
-          if (finishEvent.altKey && last0) {
-            nextP = constrainHV(last0, nextP);
-          }
-          if (!finishEvent.altKey) {
-            const endpointSnap = getNearestPolylineEndpointSnap(
-              nextP,
-              POLYLINE_ENDPOINT_SNAP_THRESHOLD,
-              { excludeShapeId: id, excludeIndexes: [0, pts0.length - 1] }
-            );
-            nextP = endpointSnap.point;
-          }
-          if (first0 && distance(nextP, first0) <= 12) {
-            nextP = { x: first0.x, y: first0.y };
-          }
-          const newPts = pts0.slice();
-          newPts[newPts.length - 1] = { x: Number(nextP?.x) || 0, y: Number(nextP?.y) || 0 };
-          applyShapeDrawPreview(id, { points: newPts });
-        }
+        commitPolylineFinalPointFromEvent(e);
         finishPolyline();
         return;
       }

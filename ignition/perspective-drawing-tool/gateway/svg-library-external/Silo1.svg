@@ -14,7 +14,7 @@
    xmlns:svg="http://www.w3.org/2000/svg"
    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
    xmlns:cc="http://creativecommons.org/ns#"
-   xmlns:dc="http://purl.org/dc/elements/1.1/">
+   xmlns:dc="http://purl.org/dc/elements/1.1/" kewidth="100" keheight="320" stroke-width="3.75" stroke-linejoin="round" stroke-linecap="round">
   <defs
      id="defs55" />
   <sodipodi:namedview
@@ -51,39 +51,39 @@
       <g
          id="support-legs"
          fill="#e6e6e6"
-         stroke-width="3"
+         stroke-width="3.75"
          transform="matrix(0.89255094,0,0,1.0002079,13.240953,-0.10808721)">
         <rect
            id="left-leg"
            x="140"
            y="660"
            width="18"
-           height="258" />
+           height="258"  stroke-width="3.75"/>
         <rect
            id="right-leg"
            x="362"
            y="660"
            width="18"
-           height="258" />
+           height="258"  stroke-width="3.75"/>
         <path
            id="left-cross-brace-1"
-           d="M 149,918 228,752" />
+           d="M 149,918 228,752"  stroke-width="3.75"/>
         <path
            id="right-cross-brace-1"
-           d="M 371,918 292,752" />
+           d="M 371,918 292,752"  stroke-width="3.75"/>
         <path
            id="left-cross-brace-2"
-           d="m 154,770 77,148" />
+           d="m 154,770 77,148"  stroke-width="3.75"/>
         <path
            id="right-cross-brace-2"
-           d="M 366,770 289,918" />
+           d="M 366,770 289,918"  stroke-width="3.75"/>
         <path
            id="leg-top-brace"
-           d="M 158,700 H 362" />
+           d="M 158,700 H 362"  stroke-width="3.75"/>
       </g>
       <g
          id="discharge-valve"
-         stroke-width="2.3"
+         stroke-width="3.75"
          transform="matrix(0.89255094,0,0,1.0002079,13.240953,-0.10808721)">
         <rect
            id="upper-valve-box"
@@ -91,110 +91,110 @@
            y="846"
            width="68"
            height="26"
-           fill="#d9d9d9" />
+           fill="#d9d9d9"  stroke-width="3.75" data-vizi-fill-target="true"/>
         <rect
            id="lower-valve-box"
            x="215"
            y="873"
            width="90"
            height="24"
-           fill="#efefef" />
+           fill="#efefef"  stroke-width="3.75" data-vizi-fill-target="true"/>
         <circle
            id="valve-wheel"
            cx="260"
            cy="885"
            r="10"
-           fill="#cfcfcf" />
+           fill="#cfcfcf"  stroke-width="3.75" data-vizi-fill-target="true"/>
         <path
            id="valve-pipe-left-right"
-           d="m 214,885 h -33 m 125,0 h 33" />
+           d="m 214,885 h -33 m 125,0 h 33"  stroke-width="3.75"/>
         <circle
            id="left-pipe-cap"
            cx="181"
            cy="885"
            r="4"
-           fill="#efefef" />
+           fill="#efefef"  stroke-width="3.75" data-vizi-fill-target="true"/>
         <circle
            id="right-pipe-cap"
            cx="339"
            cy="885"
            r="4"
-           fill="#efefef" />
+           fill="#efefef"  stroke-width="3.75" data-vizi-fill-target="true"/>
       </g>
       <path
          id="short-hopper-cone"
          d="m 127.4616,671.72061 c 19.64043,43.2766 59.81404,115.40427 85.7037,166.3745 h 64.27779 c 25.88967,-50.97023 66.06328,-123.0979 85.70371,-166.3745 z"
          fill="#e9e9e9"
-         stroke-width="2.77975" />
+         stroke-width="3.75"  data-vizi-fill-target="true"/>
       <path
          id="hopper-center-seam"
          d="M 245.3042,665.03014 V 838.0661"
          stroke="#595959"
-         stroke-width="1.13382"
+         stroke-width="3.75"
          stroke-dasharray="4, 5" />
       <path
          id="hopper-seams"
          d="M 132.84278,672.03159 213.17236,838.0661 M 357.76562,672.03159 277.43603,838.0661 M 173.90012,680.03326 229.23828,838.0661 M 316.70827,680.03326 261.37012,838.0661"
          stroke="#555555"
-         stroke-width="1.32279"
+         stroke-width="3.75"
          opacity="0.8" />
       <path
          id="hopper-top-rim"
          d="m 127.48747,705.03014 c 35.70204,20.00416 199.93142,20.00416 235.63345,0"
-         stroke-width="2.83454" />
+         stroke-width="3.75" />
       <path
          id="main-tall-bin"
          d="m 123.91727,247.94346 c 0,-22.00457 242.77386,-22.00457 242.77386,0 v 457.08668 c 0,29.00603 -242.77386,29.00603 -242.77386,0 z"
          fill="#e9e9e9"
-         stroke-width="2.83454"
-         sodipodi:nodetypes="sssss" />
+         stroke-width="3.75"
+         sodipodi:nodetypes="sssss"  data-vizi-fill-target="true"/>
       <path
          id="top-bin-collar-fill"
          d="m 125.70237,243.94263 c 34.55326,15.79163 204.6504,15.79163 239.20366,0 l 1.7851,4.00083 c 0,22.00457 -242.77386,22.00457 -242.77386,0 z"
          fill="#c9c9c9"
-         stroke-width="2.83454"
-         opacity="0.96" />
+         stroke-width="3.75"
+         opacity="0.96"  data-vizi-fill-target="true"/>
       <path
          id="top-bin-inner-shadow"
          d="m 127.31442,246.68345 c 39.65328,10.54692 196.32627,10.54692 235.97955,0"
          fill="none"
          stroke="#8a8a8a"
-         stroke-width="1.88969"
+         stroke-width="3.75"
          opacity="0.58" />
       <path
          id="top-bin-front-lip"
          d="m 123.91727,247.94346 c 0,22.00457 242.77386,22.00457 242.77386,0"
          fill="none"
          stroke="#4c4c4c"
-         stroke-width="2.36212"
+         stroke-width="3.75"
          opacity="0.8" />
       <path
          id="bottom-bin-ellipse"
          d="m 123.91727,705.03014 c 0,22.00457 242.77386,22.00457 242.77386,0"
-         stroke-width="2.36212" />
+         stroke-width="3.75" />
       <path
          id="roof"
          d="M 125.70237,243.94263 245.3042,121.91727 364.90603,243.94263 c 0,0 -22.95655,13.69533 -119.14082,11.75664 -114.09729,-2.29974 -120.06284,-11.75664 -120.06284,-11.75664 z"
          fill="#e9e9e9"
-         stroke-width="2.83454"
-         sodipodi:nodetypes="cccsc" />
+         stroke-width="3.75"
+         sodipodi:nodetypes="cccsc"  data-vizi-fill-target="true"/>
       <path
          id="roof-panel-lines"
          d="m 245.3042,121.93398 v 127.87026 m -91.91604,0 91.91604,-127.87026 M 185.51416,249.80424 245.3042,121.93398 M 214.96298,249.80424 245.3042,121.93398 M 275.64542,249.80424 245.3042,121.93398 M 305.09424,249.80424 245.3042,121.93398 M 337.22024,249.80424 245.3042,121.93398"
          stroke="#555555"
-         stroke-width="1.45068" />
+         stroke-width="3.75" />
       <g
          id="top-receiving-head-no-ladder"
-         stroke-width="2.5"
+         stroke-width="3.75"
          transform="matrix(0.89255094,0,0,1.0002079,13.240953,-0.10808721)">
         <path
            id="head-transition"
            d="m 236,124 -12,30 h 72 l -12,-30 z"
-           fill="#dddddd" />
+           fill="#dddddd"  stroke-width="3.75" data-vizi-fill-target="true"/>
       </g>
       <g
          id="labels-and-access-panels"
-         stroke-width="2"
+         stroke-width="3.75"
          transform="translate(-13.436166,-103.29049)">
         <text
            id="wheat-text-8"
@@ -206,7 +206,7 @@
            font-weight="700"
            fill="#1e1e1e"
            stroke="none"
-           style="font-size:26.6667px;line-height:0.9;stroke-width:3.07582"><tspan
+           style="font-size:26.6667px;line-height:0.9;stroke-width:3.75"><tspan
              sodipodi:role="line"
              x="153.42874"
              y="385.68753"
@@ -275,7 +275,7 @@
            height="82.450607"
            rx="23.156971"
            fill="#e5e5e5"
-           style="stroke-width:3.49845;fill:#ffffff;fill-opacity:1" />
+           style="stroke-width:3.75;fill:#ffffff;fill-opacity:1"  data-vizi-fill-target="true"/>
         <text
            id="wheat-text"
            x="256.72473"
@@ -286,7 +286,7 @@
            font-weight="700"
            fill="#1e1e1e"
            stroke="none"
-           style="stroke-width:2.46374">BIN</text>
+           style="stroke-width:3.75">BIN</text>
         <rect
            id="hatch-inner"
            x="186.41124"
@@ -295,10 +295,10 @@
            height="60.951859"
            rx="16.484827"
            fill="none"
-           stroke-width="2.80175" />
+           stroke-width="3.75" />
         <text
            xml:space="preserve"
-           style="font-size:26.6667px;line-height:0.9;writing-mode:lr-tb;direction:ltr;fill:#000000;fill-rule:evenodd;stroke:#808080;stroke-width:3;stroke-miterlimit:3.6"
+           style="font-size:26.6667px;line-height:0.9;writing-mode:lr-tb;direction:ltr;fill:#000000;fill-rule:evenodd;stroke:#808080;stroke-width:3.75;stroke-miterlimit:3.6"
            x="165.98802"
            y="525.68976"
            id="text70"><tspan

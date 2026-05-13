@@ -7,6 +7,7 @@ import { stripOuterSvg } from "../../../../app/src/utils/svgSanitize.js";
 import { getFolderFromKey } from "../../../../app/src/utils/appDataTransforms.js";
 import {
     defaultWidgetSettings,
+    getWidgetVisualBBox,
     resolveWidgetOpcServer,
     resolveWidgetWriteMode,
     widgetTemplate
@@ -38,6 +39,16 @@ const MODULE_OPC_WRITE_ROUTE_CANDIDATES = [
     `/main/data/${MODULE_URL_ALIAS}/opc-write`,
     `/data/${MODULE_ID}/opc-write`,
     `/main/data/${MODULE_ID}/opc-write`
+];
+const MODULE_GATEWAY_SCRIPT_CALL_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/gateway-script-call/`,
+    `/data/${MODULE_URL_ALIAS}/gateway-script-call`,
+    `/main/data/${MODULE_URL_ALIAS}/gateway-script-call/`,
+    `/main/data/${MODULE_URL_ALIAS}/gateway-script-call`,
+    `/data/${MODULE_ID}/gateway-script-call/`,
+    `/data/${MODULE_ID}/gateway-script-call`,
+    `/main/data/${MODULE_ID}/gateway-script-call/`,
+    `/main/data/${MODULE_ID}/gateway-script-call`
 ];
 const SVG_LIBRARY_CATALOG_ROUTE_CANDIDATES = [
     `/data/${MODULE_URL_ALIAS}/svg-library-catalog`,
@@ -122,7 +133,7 @@ const IGNITION_TOOL_HELP_SECTIONS = Object.freeze([
         title: "Getting Started",
         items: Object.freeze([
             "Use Move to select, drag, resize, rotate, flip, and edit items on the canvas.",
-            "Use Polyline to draw process flow. Left click adds segments, right click removes the current segment, and double click or Enter finishes the line.",
+            "Use Polyline to draw process flow. Left click adds segments, Shift+left click, double click, Enter, or Return finishes the line. Right click removes the current segment.",
             "Use Text to place a label or a live tag readout. Text can bind directly to an Ignition tag path.",
             "The toolbar stays visible while scrolling. Drag it to a better spot, or use Dock to return it to the default position."
         ])
@@ -3796,6 +3807,85 @@ function getPerspectiveClientStore(props) {
     );
 }
 
+function normalizePerspectiveProjectName(value) {
+    if (value == null) {
+        return "";
+    }
+    if (isPlainObject(value)) {
+        return normalizePerspectiveProjectName(
+            value.name
+            ?? value.project
+            ?? value.projectName
+            ?? value.value
+        );
+    }
+    const text = String(value || "").trim();
+    if (!text || text === "[object Object]") {
+        return "";
+    }
+    try {
+        return decodeURIComponent(text);
+    } catch (_error) {
+        return text;
+    }
+}
+
+function readPerspectiveProjectFromUrl() {
+    if (typeof window === "undefined" || !window.location) {
+        return "";
+    }
+    const parts = String(window.location.pathname || "")
+        .split("/")
+        .map((part) => part.trim())
+        .filter(Boolean);
+    for (let index = 0; index < parts.length - 2; index += 1) {
+        if (parts[index].toLowerCase() === "perspective" && parts[index + 1].toLowerCase() === "client") {
+            return normalizePerspectiveProjectName(parts[index + 2]);
+        }
+    }
+    return "";
+}
+
+function resolvePerspectiveProjectName(componentProps, clientStore = null) {
+    const nestedProps = getComponentPropSource(componentProps);
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+    const candidates = [
+        componentProps?.projectName,
+        componentProps?.project,
+        nestedProps?.projectName,
+        nestedProps?.project,
+        componentProps?.store?.projectName,
+        componentProps?.store?.project,
+        nestedProps?.store?.projectName,
+        nestedProps?.store?.project,
+        componentProps?.store?.view?.project,
+        componentProps?.store?.view?.projectName,
+        componentProps?.store?.view?.page?.project,
+        componentProps?.store?.view?.page?.projectName,
+        componentProps?.store?.page?.project,
+        componentProps?.store?.page?.projectName,
+        clientStore?.project,
+        clientStore?.projectName,
+        clientStore?.page?.project,
+        clientStore?.page?.projectName,
+        clientStore?.view?.project,
+        clientStore?.view?.projectName,
+        globalClient?.project,
+        globalClient?.projectName,
+        globalClient?.page?.project,
+        globalClient?.page?.projectName,
+        globalClient?.store?.project,
+        globalClient?.store?.projectName,
+        globalDesigner?.project,
+        globalDesigner?.projectName,
+        globalDesigner?.store?.project,
+        globalDesigner?.store?.projectName,
+        readPerspectiveProjectFromUrl()
+    ];
+    return candidates.map(normalizePerspectiveProjectName).find(Boolean) || "";
+}
+
 function normalizeOverlayPopupViewName(value) {
     return String(value || "")
         .trim()
@@ -6274,7 +6364,7 @@ function getShapeBounds(shape) {
 }
 
 function getOverlayBounds(overlay) {
-    const bbox = overlay?.bbox;
+    const bbox = getWidgetVisualBBox(overlay, overlay?.bbox);
     if (!bbox || typeof bbox !== "object") {
         return null;
     }
@@ -6708,6 +6798,10 @@ export default function PerspectiveViziCanvasBridge(props) {
     const externalShowRulers = Boolean(getModelValue(props, "showRulers", false));
     const externalShowTagPaths = Boolean(getModelValue(props, "showTagPaths", false));
     const externalSelectionMode = String(getModelValue(props, "selectionMode", "all") || "all");
+    const detectedPerspectiveProject = resolvePerspectiveProjectName(props, perspectiveClientStore);
+    const gatewayScriptProject = String(
+        getModelValue(props, "gatewayScriptProject", getModelValue(props, "projectName", detectedPerspectiveProject)) || ""
+    ).trim();
     const externalStrokeNormalizeWidthRaw = Number(getModelValue(props, "strokeNormalizeWidth", NORMALIZED_SVG_STROKE_WIDTH));
     const externalStrokeNormalizeWidth = Number.isFinite(externalStrokeNormalizeWidthRaw) && externalStrokeNormalizeWidthRaw > 0
         ? externalStrokeNormalizeWidthRaw
@@ -6820,6 +6914,8 @@ export default function PerspectiveViziCanvasBridge(props) {
     const overlaysRef = useRef(coerceArray(externalOverlays));
     const localShapesWriteRef = useRef({ key: externalShapesKey, until: 0 });
     const localOverlaysWriteRef = useRef({ key: externalOverlaysKey, until: 0 });
+    const pendingMouseMoveRef = useRef(null);
+    const mouseMoveRafRef = useRef(0);
     const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
     const historyRef = useRef({ past: [], future: [], current: null });
     const historyRestoreRef = useRef(false);
@@ -7565,7 +7661,9 @@ export default function PerspectiveViziCanvasBridge(props) {
                 typeof updater === "function" ? updater(shapesRef.current) : updater
             );
             shapesRef.current = nextShapes;
-            localShapesWriteRef.current = { key: JSON.stringify(nextShapes), until: Date.now() + 2000 };
+            if (options.persist || options.trackLocalWrite) {
+                localShapesWriteRef.current = { key: JSON.stringify(nextShapes), until: Date.now() + 2000 };
+            }
             setShapesState(nextShapes);
             if (options.persist) {
                 persistShapes(nextShapes);
@@ -7581,7 +7679,9 @@ export default function PerspectiveViziCanvasBridge(props) {
                 typeof updater === "function" ? updater(overlaysRef.current) : updater
             );
             overlaysRef.current = nextOverlays;
-            localOverlaysWriteRef.current = { key: JSON.stringify(nextOverlays), until: Date.now() + 2000 };
+            if (options.persist || options.trackLocalWrite) {
+                localOverlaysWriteRef.current = { key: JSON.stringify(nextOverlays), until: Date.now() + 2000 };
+            }
             setSvgOverlaysState(nextOverlays);
             if (options.persist) {
                 persistSvgOverlays(nextOverlays);
@@ -9169,12 +9269,12 @@ export default function PerspectiveViziCanvasBridge(props) {
             return null;
         }
 
-        return {
+        return getWidgetVisualBBox(overlay, {
             x: Number.isFinite(x) ? x : 0,
             y: Number.isFinite(y) ? y : 0,
             width,
             height
-        };
+        });
     }, []);
 
     const selectedShapeItems = useMemo(
@@ -9768,8 +9868,19 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     const startOrAppendPolylineAt = useCallback((point, event) => {
         if (drawing?.kind === "polyline" && drawing.id) {
-            if (Number(event?.detail || 0) >= 2) {
-                finishActivePolylineAt(drawing.id, point, event);
+            if (event?.shiftKey || Number(event?.detail || 0) >= 2) {
+                finishActivePolylineAt(
+                    drawing.id,
+                    point,
+                    event?.shiftKey
+                        ? {
+                            altKey: event?.altKey,
+                            ctrlKey: event?.ctrlKey,
+                            metaKey: event?.metaKey,
+                            shiftKey: false
+                        }
+                        : event
+                );
                 return;
             }
             appendPolylinePoint(drawing.id, maybeConstrainPolylinePoint(drawing.id, point, event));
@@ -11669,19 +11780,68 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
 
         if (drawing?.kind === "polyline") {
-            updateShapes((previous) => previous.map((shape) => {
-                if (String(shape?.id || "") !== String(drawing.id || "")) {
-                    return shape;
+            const shapeId = String(drawing.id || "");
+            const nextPreviewPoint = maybeConstrainPolylinePoint(drawing.id, point, event);
+            updateShapes((previous) => {
+                const index = previous.findIndex((shape) => String(shape?.id || "") === shapeId);
+                if (index < 0) {
+                    return previous;
+                }
+                const shape = previous[index];
+                if (!Array.isArray(shape?.points)) {
+                    return previous;
                 }
                 const points = clonePoints(shape.points);
                 if (!points.length) {
-                    return shape;
+                    return previous;
                 }
-                points[points.length - 1] = maybeConstrainPolylinePoint(drawing.id, point, event);
-                return { ...shape, points };
-            }), { persist: false });
+                const currentPoint = points[points.length - 1];
+                if (
+                    currentPoint &&
+                    Math.abs(Number(currentPoint.x || 0) - Number(nextPreviewPoint.x || 0)) < 0.01 &&
+                    Math.abs(Number(currentPoint.y || 0) - Number(nextPreviewPoint.y || 0)) < 0.01
+                ) {
+                    return previous;
+                }
+                points[points.length - 1] = nextPreviewPoint;
+                const next = previous.slice();
+                next[index] = { ...shape, points };
+                return next;
+            }, { persist: false });
         }
     }, [canvasPanDrag, clampEditorPanToViewport, constrainPolylineHandleMove, dragHandle, dragSegment, dragState, drawing, editorZoom, marquee, maybeConstrainPolylinePoint, overlayResize, pointFromEvent, screenDeltaToEditorPanDelta, shapeResize, updateShapes, updateSvgOverlays, viewBox.height, viewBox.width]);
+
+    const scheduleMouseMove = useCallback((event) => {
+        const eventLike = {
+            clientX: Number(event?.clientX) || 0,
+            clientY: Number(event?.clientY) || 0,
+            altKey: Boolean(event?.altKey),
+            shiftKey: Boolean(event?.shiftKey),
+            ctrlKey: Boolean(event?.ctrlKey),
+            metaKey: Boolean(event?.metaKey)
+        };
+        pendingMouseMoveRef.current = eventLike;
+
+        const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+            ? window.requestAnimationFrame.bind(window)
+            : null;
+        if (!raf) {
+            pendingMouseMoveRef.current = null;
+            handleMouseMove(eventLike);
+            return;
+        }
+        if (mouseMoveRafRef.current) {
+            return;
+        }
+        mouseMoveRafRef.current = raf(() => {
+            mouseMoveRafRef.current = 0;
+            const nextEvent = pendingMouseMoveRef.current;
+            pendingMouseMoveRef.current = null;
+            if (nextEvent) {
+                handleMouseMove(nextEvent);
+            }
+        });
+    }, [handleMouseMove]);
 
     const handleMouseUp = useCallback(() => {
         if (canvasPanDrag?.startClient) {
@@ -11808,7 +11968,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         if (!useWindowPointerTracking || typeof window === "undefined") {
             return undefined;
         }
-        const handleMove = (event) => handleMouseMove(event);
+        const handleMove = (event) => scheduleMouseMove(event);
         const handleRelease = () => handleMouseUp();
         window.addEventListener("mousemove", handleMove);
         window.addEventListener("mouseup", handleRelease);
@@ -11822,7 +11982,17 @@ export default function PerspectiveViziCanvasBridge(props) {
             window.removeEventListener("pointercancel", handleRelease);
             window.removeEventListener("blur", handleRelease);
         };
-    }, [handleMouseMove, handleMouseUp, useWindowPointerTracking]);
+    }, [handleMouseUp, scheduleMouseMove, useWindowPointerTracking]);
+
+    useEffect(() => {
+        return () => {
+            if (mouseMoveRafRef.current && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+                window.cancelAnimationFrame(mouseMoveRafRef.current);
+            }
+            mouseMoveRafRef.current = 0;
+            pendingMouseMoveRef.current = null;
+        };
+    }, []);
 
     const handleSvgDoubleClick = useCallback((event) => {
         event?.preventDefault?.();
@@ -11840,15 +12010,6 @@ export default function PerspectiveViziCanvasBridge(props) {
 
         const isDrawingPolyline = drawing?.kind === "polyline" && drawing.id;
         if ((tool === "polyline" || tool === "trunkconn") && isDrawingPolyline) {
-            if (event?.shiftKey) {
-                finishActivePolylineAt(drawing.id, pointFromEvent(event), {
-                    altKey: event?.altKey,
-                    ctrlKey: event?.ctrlKey,
-                    metaKey: event?.metaKey,
-                    shiftKey: false
-                });
-                return;
-            }
             removeCurrentPolylineSegment();
             return;
         }
@@ -12012,20 +12173,26 @@ export default function PerspectiveViziCanvasBridge(props) {
         [selectedOverlayEmbeddedView]
     );
     const selectedOverlayWidgetSupportsWrite = useMemo(
-        () => ["displaybox", "pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
+        () => ["displaybox", "pushbutton", "onoffbutton", "routedisplay"].includes(selectedOverlayWidgetKind),
         [selectedOverlayWidgetKind]
     );
     const selectedOverlayWidgetSupportsView = useMemo(
         () => ["pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
         [selectedOverlayWidgetKind]
     );
+    const selectedOverlayWidgetSupportsScript = useMemo(
+        () => ["pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
+        [selectedOverlayWidgetKind]
+    );
     const selectedOverlayWidgetSupportsButtonTextColor = useMemo(
-        () => ["displaybox", "pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
+        () => ["displaybox", "pushbutton", "onoffbutton", "routedisplay"].includes(selectedOverlayWidgetKind),
         [selectedOverlayWidgetKind]
     );
     const selectedOverlayWidgetWriteMode = useMemo(
-        () => resolveWidgetWriteMode(selectedOverlay?.widget, selectedOverlay?.tagPath),
-        [selectedOverlay]
+        () => selectedOverlayWidgetKind === "routedisplay"
+            ? "opc"
+            : resolveWidgetWriteMode(selectedOverlay?.widget, selectedOverlay?.tagPath),
+        [selectedOverlay, selectedOverlayWidgetKind]
     );
     const selectedOverlayWidgetOpcServer = useMemo(
         () => resolveWidgetOpcServer(selectedOverlay?.widget),
@@ -13397,6 +13564,96 @@ export default function PerspectiveViziCanvasBridge(props) {
         throw new Error(lastError);
     }, []);
 
+    const callGatewayScript = useCallback(async (scriptPath, options = {}) => {
+        const nextScriptPath = String(scriptPath || options?.script || options?.scriptPath || "").trim();
+        if (!nextScriptPath) {
+            throw new Error("Gateway script path is required.");
+        }
+
+        const nextProject = String(options?.project || gatewayScriptProject || "").trim();
+        const requestBody = {
+            script: nextScriptPath
+        };
+        if (nextProject) {
+            requestBody.project = nextProject;
+        }
+        if (Array.isArray(options?.args)) {
+            requestBody.args = options.args;
+        }
+        if (isPlainObject(options?.kwargs)) {
+            requestBody.kwargs = options.kwargs;
+        }
+
+        let lastError = "Gateway script call failed.";
+
+        for (const routePath of MODULE_GATEWAY_SCRIPT_CALL_ROUTE_CANDIDATES) {
+            try {
+                const response = await fetch(routePath, {
+                    method: "POST",
+                    cache: "no-store",
+                    credentials: "same-origin",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+                let payload = null;
+                try {
+                    payload = await response.json();
+                } catch (_error) {
+                    payload = null;
+                }
+                const error = String(payload?.error || "").trim();
+                const payloadReachedScriptRoute = payload && typeof payload === "object" && (
+                    Object.prototype.hasOwnProperty.call(payload, "ok")
+                    || Object.prototype.hasOwnProperty.call(payload, "script")
+                    || Object.prototype.hasOwnProperty.call(payload, "project")
+                    || error
+                );
+                if (payloadReachedScriptRoute && (payload?.ok === false || error)) {
+                    throw new Error(error || `Gateway script call failed (${response.status}).`);
+                }
+                if (!response.ok) {
+                    lastError = `Gateway script call failed (${response.status}).`;
+                    if (response.status === 404 || response.status === 405 || response.status === 503) {
+                        continue;
+                    }
+                    throw new Error(lastError);
+                }
+                if (error) {
+                    throw new Error(error);
+                }
+                if (payload?.ok === false) {
+                    throw new Error("Gateway script call failed.");
+                }
+                if (payload == null) {
+                    lastError = `Gateway script call failed (${response.status}).`;
+                    continue;
+                }
+                return payload;
+            } catch (error) {
+                lastError = String(error?.message || "Gateway script call failed.");
+                if (lastError && !/Gateway script call failed \((?:404|405|503)\)\.?/i.test(lastError)) {
+                    throw error;
+                }
+            }
+        }
+
+        throw new Error(lastError);
+    }, [gatewayScriptProject]);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return undefined;
+        }
+        window.viziCallGatewayScript = callGatewayScript;
+        return () => {
+            if (window.viziCallGatewayScript === callGatewayScript) {
+                delete window.viziCallGatewayScript;
+            }
+        };
+    }, [callGatewayScript]);
+
     const selectedShapeLabel = selectedShape
         ? (() => {
             const rawType = String(selectedShape?.type || "").toLowerCase();
@@ -13693,7 +13950,11 @@ export default function PerspectiveViziCanvasBridge(props) {
                 return;
             }
 
-            if (event.key === "Enter" && drawing?.kind === "polyline") {
+            const isFinishLineKey =
+                event.key === "Enter" ||
+                event.key === "Return" ||
+                event.code === "NumpadEnter";
+            if (isFinishLineKey && drawing?.kind === "polyline") {
                 event.preventDefault();
                 finishPolyline();
             }
@@ -13933,7 +14194,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 showRulers={editorVisible && showRulers}
                 useWindowPointerTracking={useWindowPointerTracking}
                 onSvgMouseDown={editorVisible ? handleSvgMouseDown : NOOP}
-                onMouseMove={editorVisible ? handleMouseMove : NOOP}
+                onMouseMove={editorVisible ? scheduleMouseMove : NOOP}
                 onMouseUp={editorVisible ? handleMouseUp : NOOP}
                 onContextMenu={editorVisible ? handleCanvasContextMenu : NOOP}
                 onShapeMouseDown={editorVisible ? handleShapeMouseDown : NOOP}
@@ -13967,6 +14228,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 ignitionTagValuesByPath={ignitionTagValuesByPath}
                 writeIgnitionTagValue={writeIgnitionTagValue}
                 writeIgnitionOpcValue={writeIgnitionOpcValue}
+                callGatewayScript={callGatewayScript}
                 liveTagKeys={coerceArray(getModelValue(props, "liveTagKeys", EMPTY_ARRAY))}
                 opcTags={coerceArray(getModelValue(props, "opcTags", EMPTY_ARRAY))}
                 opcTemplateMap={EMPTY_MAP}
@@ -14997,17 +15259,25 @@ export default function PerspectiveViziCanvasBridge(props) {
                                         value={selectedOverlayWidgetWriteMode}
                                         sections={[
                                             {
-                                                items: [
-                                                    { value: "ignition", label: "Ignition Tag" },
-                                                    { value: "opc", label: "Direct OPC" },
-                                                    ...(selectedOverlayWidgetSupportsView
-                                                        ? [{ value: "view", label: "Open View" }]
-                                                        : [])
-                                                ]
+                                                items: selectedOverlayWidgetKind === "routedisplay"
+                                                    ? [{ value: "opc", label: "Direct OPC" }]
+                                                    : [
+                                                        { value: "ignition", label: "Ignition Tag" },
+                                                        { value: "opc", label: "Direct OPC" },
+                                                        ...(selectedOverlayWidgetSupportsView
+                                                            ? [{ value: "view", label: "Open View" }]
+                                                            : []),
+                                                        ...(selectedOverlayWidgetSupportsScript
+                                                            ? [{ value: "script", label: "Gateway Script" }]
+                                                            : [])
+                                                    ]
                                             }
                                         ]}
                                         onChange={(nextValue) => {
-                                            commitSelectedOverlayWidgetField("writeMode", nextValue);
+                                            commitSelectedOverlayWidgetField(
+                                                "writeMode",
+                                                selectedOverlayWidgetKind === "routedisplay" ? "opc" : nextValue
+                                            );
                                         }}
                                     />
                                 ) : null}
@@ -15028,6 +15298,44 @@ export default function PerspectiveViziCanvasBridge(props) {
                                             rows={4}
                                             onCommit={(value) => {
                                                 commitSelectedOverlayWidgetField("viewParamsJson", String(value ?? "").trim() || "{}");
+                                            }}
+                                        />
+                                    </>
+                                ) : null}
+                                {!selectedOverlayIsEmbeddedView && selectedOverlay.widget && selectedOverlayWidgetSupportsScript && selectedOverlayWidgetWriteMode === "script" ? (
+                                    <>
+                                        <PropertyField
+                                            label="Script Path"
+                                            value={selectedOverlay.widget?.scriptPath || ""}
+                                            placeholder="Terra.UI.test.helloworld"
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayWidgetField("scriptPath", String(value ?? "").trim());
+                                            }}
+                                        />
+                                        <PropertyField
+                                            label="Project"
+                                            value={selectedOverlay.widget?.scriptProject || ""}
+                                            placeholder="Terra (optional)"
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayWidgetField("scriptProject", String(value ?? "").trim());
+                                            }}
+                                        />
+                                        <PropertyTextArea
+                                            label="Args JSON"
+                                            value={selectedOverlay.widget?.scriptArgsJson || "[]"}
+                                            placeholder='[]'
+                                            rows={3}
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayWidgetField("scriptArgsJson", String(value ?? "").trim() || "[]");
+                                            }}
+                                        />
+                                        <PropertyTextArea
+                                            label="Kwargs JSON"
+                                            value={selectedOverlay.widget?.scriptKwargsJson || "{}"}
+                                            placeholder='{"tag_path":"Route1"}'
+                                            rows={4}
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayWidgetField("scriptKwargsJson", String(value ?? "").trim() || "{}");
                                             }}
                                         />
                                     </>
@@ -15202,7 +15510,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                                                 }}
                                             />
                                         ) : null}
-                                        {String(selectedOverlay.widget?.kind || "").trim().toLowerCase() === "pushbutton" ? (
+                                        {String(selectedOverlay.widget?.kind || "").trim().toLowerCase() === "pushbutton" && selectedOverlayWidgetWriteMode !== "view" && selectedOverlayWidgetWriteMode !== "script" ? (
                                             <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
                                                 <PropertyField
                                                     label="Press Value"

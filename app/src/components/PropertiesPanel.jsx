@@ -880,13 +880,23 @@ export default function PropertiesPanel({
   const widgetTitleVal = String(hudFields?.widgetTitle || "");
   const widgetTextColorVal = String(hudFields?.widgetTextColor || "");
   const widgetButtonTextColorVal = String(hudFields?.widgetButtonTextColor || "");
-  const widgetWriteModeVal = String(hudFields?.widgetWriteMode || "ignition").trim().toLowerCase() === "view"
+  const widgetWriteModeVal = widgetKindVal === "routeDisplay"
+    ? "opc"
+    : ["script", "gateway-script", "gatewayscript", "project-script", "projectscript"].includes(
+      String(hudFields?.widgetWriteMode || "ignition").trim().toLowerCase()
+    )
+    ? "script"
+    : String(hudFields?.widgetWriteMode || "ignition").trim().toLowerCase() === "view"
     ? "view"
     : String(hudFields?.widgetWriteMode || "ignition").trim().toLowerCase() === "opc"
     ? "opc"
     : "ignition";
   const widgetViewPathVal = String(hudFields?.widgetViewPath || "");
   const widgetViewParamsJsonVal = String(hudFields?.widgetViewParamsJson || "{}");
+  const widgetScriptPathVal = String(hudFields?.widgetScriptPath || "");
+  const widgetScriptProjectVal = String(hudFields?.widgetScriptProject || "");
+  const widgetScriptArgsJsonVal = String(hudFields?.widgetScriptArgsJson || "[]");
+  const widgetScriptKwargsJsonVal = String(hudFields?.widgetScriptKwargsJson || "{}");
   const widgetLocationVal = String(hudFields?.widgetLocation || "");
   const widgetMinVal = String(hudFields?.widgetMin ?? "0");
   const widgetMaxVal = String(hudFields?.widgetMax ?? "100");
@@ -980,11 +990,13 @@ export default function PropertiesPanel({
   const isTrendChartKind =
     widgetKindVal === "lineChart" || widgetKindVal === "areaChart" || widgetKindVal === "barChart";
   const widgetSupportsWriteTarget =
-    widgetKindVal === "displayBox" || widgetKindVal === "pushButton" || widgetKindVal === "onOffButton";
+    widgetKindVal === "displayBox" || widgetKindVal === "pushButton" || widgetKindVal === "onOffButton" || widgetKindVal === "routeDisplay";
   const widgetSupportsOpenView =
     widgetKindVal === "pushButton" || widgetKindVal === "onOffButton";
+  const widgetSupportsGatewayScript =
+    widgetKindVal === "pushButton" || widgetKindVal === "onOffButton";
   const widgetSupportsButtonTextColor =
-    widgetKindVal === "displayBox" || widgetKindVal === "pushButton" || widgetKindVal === "onOffButton";
+    widgetKindVal === "displayBox" || widgetKindVal === "pushButton" || widgetKindVal === "onOffButton" || widgetKindVal === "routeDisplay";
   const widgetUsesSeriesTagBinding =
     isWidget &&
     (widgetKindVal === "lineChart" ||
@@ -1377,7 +1389,7 @@ export default function PropertiesPanel({
             {isWidget ? (
               <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
                 {isRouteDisplayWidget
-                  ? "Bind the parent route tag, for example `Perspective/Route/Route`. Reads Job/JobNo, HMI_JobStateText, HMI_RouteStateText, and RouteName."
+                  ? "Bind the parent route tag, for example `Route1`. Pause/Continue always write Direct OPC to `.HMI_Write.Cmd`."
                   : isScaleAdapterWidget
                   ? "Bind the parent ScaleAdaptor tag. Reads Description, HMI_State, OutFlowrate, and OutJobWeight."
                   : widgetUsesSeriesTagBinding
@@ -1599,7 +1611,11 @@ export default function PropertiesPanel({
                     label="Action"
                     value={widgetWriteModeVal}
                     onChange={(v) => {
-                      const nextMode = String(v || "").trim().toLowerCase() === "view"
+                      const nextMode = widgetKindVal === "routeDisplay"
+                        ? "opc"
+                        : String(v || "").trim().toLowerCase() === "script"
+                        ? "script"
+                        : String(v || "").trim().toLowerCase() === "view"
                         ? "view"
                         : String(v || "").trim().toLowerCase() === "opc"
                         ? "opc"
@@ -1609,11 +1625,14 @@ export default function PropertiesPanel({
                       applySingleWidgetSettings?.(next);
                     }}
                     onBlur={() => applySingleWidgetSettings?.(hudFields)}
-                    options={[
-                      { value: "ignition", label: "Ignition Tag" },
-                      { value: "opc", label: "Direct OPC" },
-                      ...(widgetSupportsOpenView ? [{ value: "view", label: "Open View" }] : []),
-                    ]}
+                    options={widgetKindVal === "routeDisplay"
+                      ? [{ value: "opc", label: "Direct OPC" }]
+                      : [
+                          { value: "ignition", label: "Ignition Tag" },
+                          { value: "opc", label: "Direct OPC" },
+                          ...(widgetSupportsOpenView ? [{ value: "view", label: "Open View" }] : []),
+                          ...(widgetSupportsGatewayScript ? [{ value: "script", label: "Gateway Script" }] : []),
+                        ]}
                   />
                 ) : null}
                 {widgetSupportsOpenView && widgetWriteModeVal === "view" ? (
@@ -1631,6 +1650,58 @@ export default function PropertiesPanel({
                       onChange={(e) => setHudFields((p) => ({ ...p, widgetViewParamsJson: e.target.value }))}
                       onBlur={() => applySingleWidgetSettings?.(hudFields)}
                       placeholder='{"tagPath":"[default]MyTag"}'
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                        padding: "6px 8px",
+                        fontSize: 12,
+                        minHeight: 72,
+                        resize: "vertical",
+                        background: "var(--bg-elev)",
+                        color: "var(--text)",
+                      }}
+                    />
+                  </>
+                ) : null}
+                {widgetSupportsGatewayScript && widgetWriteModeVal === "script" ? (
+                  <>
+                    <Row
+                      label="Script Path"
+                      value={widgetScriptPathVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetScriptPath: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="Terra.UI.test.helloworld"
+                    />
+                    <Row
+                      label="Project"
+                      value={widgetScriptProjectVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetScriptProject: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="Terra (optional)"
+                    />
+                    <div style={labelStyle}>Args JSON</div>
+                    <textarea
+                      value={widgetScriptArgsJsonVal}
+                      onChange={(e) => setHudFields((p) => ({ ...p, widgetScriptArgsJson: e.target.value }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder='[]'
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                        padding: "6px 8px",
+                        fontSize: 12,
+                        minHeight: 54,
+                        resize: "vertical",
+                        background: "var(--bg-elev)",
+                        color: "var(--text)",
+                      }}
+                    />
+                    <div style={labelStyle}>Kwargs JSON</div>
+                    <textarea
+                      value={widgetScriptKwargsJsonVal}
+                      onChange={(e) => setHudFields((p) => ({ ...p, widgetScriptKwargsJson: e.target.value }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder='{"tag_path":"Route1"}'
                       style={{
                         border: "1px solid var(--border)",
                         borderRadius: 8,
@@ -1756,10 +1827,14 @@ export default function PropertiesPanel({
                     />
                   </>
                 )}
-                {(widgetKindVal === "displayBox" || widgetKindVal === "pushButton" || widgetKindVal === "onOffButton") ? (
+                {(widgetKindVal === "displayBox" || widgetKindVal === "pushButton" || widgetKindVal === "onOffButton" || widgetKindVal === "routeDisplay") ? (
                   <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
-                    {widgetWriteModeVal === "view"
+                    {widgetKindVal === "routeDisplay"
+                      ? "Route buttons always use Direct OPC, e.g. `Route1.HMI_Write.Cmd.CmdPause` and `CmdContinue`."
+                      : widgetWriteModeVal === "view"
                       ? "Clicking this widget opens the Perspective view path above."
+                      : widgetWriteModeVal === "script"
+                      ? "Clicking this button calls the configured Ignition gateway Project Library script."
                       : "Bind an Ignition tag or OPC item path. This widget reads live value and supports writes."}
                   </div>
                 ) : null}
